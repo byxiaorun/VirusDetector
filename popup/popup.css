@@ -91,8 +91,20 @@ body {
 
 /* Footer */
 #footer { display:flex; justify-content:space-between; align-items:center; padding:8px 18px;
-  border-top:1px solid var(--border); background:var(--bg2); }
+  border-top:1px solid var(--border); background:var(--bg2); gap:6px; }
 .footer-btn { background:transparent; border:1px solid var(--border); color:var(--text2);
   padding:5px 10px; border-radius:4px; font-size:11px; cursor:pointer; }
 .footer-btn:hover { background:var(--bg3); color:var(--text); }
-.footer-version { font-size:10px; color:var(--text3); }
+.footer-version { font-size:10px; color:var(--text3); margin-left:auto; }
+
+/* Whitelist Button */
+.whitelist-btn { border-color:#2196F3; color:#64B5F6; }
+.whitelist-btn:hover { background:#1a237e; color:#90CAF9; border-color:#42A5F5; }
+.whitelist-btn.active { background:#1a237e; color:#90CAF9; border-color:#42A5F5; }
+
+/* Whitelist Indicator */
+.whitelist-indicator { display:inline-flex; align-items:center; gap:4px;
+  background:rgba(33,150,243,.15); border:1px solid #2196F3;
+  border-radius:12px; padding:2px 10px; font-size:11px; color:#64B5F6;
+  margin-bottom:8px; }
+.whitelist-indicator .wl-icon { font-size:13px; }

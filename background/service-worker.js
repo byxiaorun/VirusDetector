@@ -3,7 +3,7 @@
  *
  * 核心职责：
  * 1. 页面导航监听 → 缓存检查 → 触发分析
- * 2. 评分汇总 → 即时图标切换 + 警告弹窗 + 高危页面注入
+ * 2. 评分汇总 → 徽章更新 + 警告弹窗 + 高危页面注入
  * 3. 下载监听 → 压缩包检测 → 取消下载 → 重新评分
  * 4. 消息通信 → popup/ content script ↔ background
  * 5. 缓存管理
@@ -58,31 +58,79 @@ async function clearTabState(tabId) {
 }
 
 // ==================== 图标更新 ====================
+// 始终使用统一的护盾图标，不切换图标，仅通过徽章(badge)右下角显示分数
+// 绿色底 = 安全，红色底 = 危险
 
 function setIconRed(tabId) {
-  chrome.action.setIcon({ tabId, path: {
-    16: 'icons/icon16_red.png', 32: 'icons/icon32_red.png',
-    48: 'icons/icon48_red.png', 128: 'icons/icon128_red.png'
-  }}).catch(() => {});
+  // 不更改图标，仅设置红色徽章
   chrome.action.setBadgeText({ tabId, text: '!' }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ tabId, color: '#F44336' }).catch(() => {});
 }
 
 function setIconGreen(tabId, score) {
-  chrome.action.setIcon({ tabId, path: {
-    16: 'icons/icon16.png', 32: 'icons/icon32.png',
-    48: 'icons/icon48.png', 128: 'icons/icon128.png'
-  }}).catch(() => {});
+  // 不更改图标，仅设置绿色徽章显示分数
   chrome.action.setBadgeText({ tabId, text: String(score || 0) }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ tabId, color: '#4CAF50' }).catch(() => {});
 }
 
 function resetIcon(tabId) {
-  chrome.action.setIcon({ tabId, path: {
-    16: 'icons/icon16.png', 32: 'icons/icon32.png',
-    48: 'icons/icon48.png', 128: 'icons/icon128.png'
-  }}).catch(() => {});
   chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+}
+
+function setIconWhitelist(tabId) {
+  chrome.action.setBadgeText({ tabId, text: '✓' }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color: '#2196F3' }).catch(() => {});
+}
+
+// ==================== 白名单管理 ====================
+
+async function loadWhitelist() {
+  try {
+    const r = await chrome.storage.local.get(STORAGE_KEYS.WHITELIST);
+    return r[STORAGE_KEYS.WHITELIST] || [];
+  } catch (e) { return []; }
+}
+
+async function saveWhitelist(whitelist) {
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEYS.WHITELIST]: whitelist });
+  } catch (e) { /* ignore */ }
+}
+
+/**
+ * 检查URL对应域名是否在白名单中
+ */
+async function isWhitelisted(url) {
+  const domain = UrlUtils.extractHostname(url);
+  const whitelist = await loadWhitelist();
+  return whitelist.includes(domain);
+}
+
+/**
+ * 将域名加入白名单
+ */
+async function addToWhitelist(url) {
+  const domain = UrlUtils.extractHostname(url);
+  const whitelist = await loadWhitelist();
+  if (!whitelist.includes(domain)) {
+    whitelist.push(domain);
+    await saveWhitelist(whitelist);
+    console.log('[ServiceWorker] 已加入白名单:', domain);
+  }
+}
+
+/**
+ * 将域名从白名单移除
+ */
+async function removeFromWhitelist(url) {
+  const domain = UrlUtils.extractHostname(url);
+  const whitelist = await loadWhitelist();
+  const idx = whitelist.indexOf(domain);
+  if (idx !== -1) {
+    whitelist.splice(idx, 1);
+    await saveWhitelist(whitelist);
+    console.log('[ServiceWorker] 已移出白名单:', domain);
+  }
 }
 
 // ==================== 高危响应流程 ====================
@@ -121,7 +169,7 @@ async function triggerWarningFlow(tabId, tabState) {
   // 3. 桌面通知
   chrome.notifications.create({
     type: 'basic',
-    iconUrl: 'icons/icon128_red.png',
+    iconUrl: 'icons/icon128.png',
     title: '⚠️ 银狐木马检测 - 风险警告',
     message: `检测到疑似钓鱼网站: ${domain}\n风险评分: ${score}分${correctUrl ? '\n正确官网: ' + correctUrl : ''}`,
     priority: 2,
@@ -334,6 +382,22 @@ function openWarningWindow(tabState) {
 async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
   let tabState = await loadTabState(tabId);
 
+  // 白名单检查：如果在白名单中，跳过所有检测
+  if (await isWhitelisted(url)) {
+    console.log('[ServiceWorker] 网站已在白名单中，跳过检测:', domain);
+    tabState.isAnalyzed = true;
+    tabState.isWhitelisted = true;
+    tabState.url = url;
+    tabState.domain = domain;
+    tabState.score = 0;
+    tabState.riskLevel = RISK_LEVEL.SAFE;
+    await saveTabState(tabId, tabState);
+    setIconWhitelist(tabId);
+    return;
+  }
+
+  tabState.isWhitelisted = false;
+
   // 是否有来自 Content Script 的新数据
   const hasFreshData = !!(pageMetrics || linkMetrics);
 
@@ -434,6 +498,18 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
   tabState.isAnalyzed = false;
   await saveTabState(tabId, tabState);
 
+  // 白名单检查：如果在白名单中，直接跳过分析
+  if (await isWhitelisted(url)) {
+    tabState.isAnalyzed = true;
+    tabState.isWhitelisted = true;
+    tabState.score = 0;
+    tabState.riskLevel = RISK_LEVEL.SAFE;
+    await saveTabState(tabId, tabState);
+    setIconWhitelist(tabId);
+    console.log('[ServiceWorker] 白名单网站，跳过检测:', domain);
+    return;
+  }
+
   // 启动分析（异步，不阻塞导航事件）
   analyzePage(tabId, url, domain, null, null).catch(e =>
     console.error('[ServiceWorker] analyzePage error:', e));
@@ -452,6 +528,12 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     const tabId = tabs[0].id;
 
     const tabState = await loadTabState(tabId);
+
+    // 白名单检查：白名单中的网站不拦截下载
+    if (tabState.isWhitelisted) {
+      console.log('[ServiceWorker] 白名单网站，跳过下载检测:', tabState.domain);
+      return;
+    }
 
     // 更新下载状态
     tabState.downloadState = {
@@ -535,11 +617,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
         if (tabs.length === 0) { sendResponse({ success: false, error: 'no tab' }); return; }
         const ts = await loadTabState(tabs[0].id);
+        // 实时检查白名单状态
+        const whitelisted = await isWhitelisted(ts.url || '');
+        ts.isWhitelisted = whitelisted;
         sendResponse({
           success: true,
           data: {
             url: ts.url, domain: ts.domain, score: ts.score,
             riskLevel: ts.riskLevel, isAnalyzed: ts.isAnalyzed,
+            isWhitelisted: whitelisted,
             ruleResults: ts.ruleResults, correctUrl: ts.correctUrl,
             officialName: ts.officialName
           }
@@ -560,6 +646,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
         if (tabs.length > 0) { await clearTabState(tabs[0].id); resetIcon(tabs[0].id); }
         sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    case MSG_TYPES.ADD_TO_WHITELIST:
+    case 'ADD_TO_WHITELIST': {
+      chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+        if (tabs.length === 0) { sendResponse({ success: false, error: 'no tab' }); return; }
+        const url = message.payload?.url || '';
+        if (url) {
+          await addToWhitelist(url);
+          // 更新当前标签页状态
+          const ts = await loadTabState(tabs[0].id);
+          ts.isWhitelisted = true;
+          ts.score = 0;
+          ts.riskLevel = RISK_LEVEL.SAFE;
+          ts.isAnalyzed = true;
+          await saveTabState(tabs[0].id, ts);
+          setIconWhitelist(tabs[0].id);
+          // 清除该域名的缓存（使其不再被分析）
+          const domain = UrlUtils.extractHostname(url);
+          if (domain) await CacheManager.remove(domain);
+        }
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    case MSG_TYPES.REMOVE_FROM_WHITELIST:
+    case 'REMOVE_FROM_WHITELIST': {
+      chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+        if (tabs.length === 0) { sendResponse({ success: false, error: 'no tab' }); return; }
+        const url = message.payload?.url || '';
+        if (url) {
+          await removeFromWhitelist(url);
+          // 清除标签页状态，触发重新分析
+          const ts = await loadTabState(tabs[0].id);
+          ts.isWhitelisted = false;
+          ts.isAnalyzed = false;
+          await saveTabState(tabs[0].id, ts);
+          // 触发重新分析
+          analyzePage(tabs[0].id, ts.url || url, ts.domain || UrlUtils.extractHostname(url),
+            null, null).catch(console.error);
+        }
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    case MSG_TYPES.CHECK_WHITELIST:
+    case 'CHECK_WHITELIST': {
+      const url = message.payload?.url || '';
+      isWhitelisted(url).then(result => {
+        sendResponse({ success: true, isWhitelisted: result });
       });
       return true;
     }

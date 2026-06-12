@@ -4,7 +4,7 @@
  *
  * 规则一：域名仿冒           → 60分（子串包含/段级关键词/可疑TLD/编辑距离）
  * 规则二：压缩包下载         → 40分（域名已有≥30嫌疑）/ 10分（弱信号）
- * 规则三：ICP备案号缺失     → 50分（.cn或中国品牌）
+ * 规则三：ICP备案号缺失     → 50分（所有网站）
  * 规则四：链接分析           → Part A(同页链接+30/死链+30) / Part B(下载钮+10/文件+10/压缩+10)
  * 规则五：AI生成页面特征    → 30分（代码简陋但内容丰富）
  */
@@ -16,9 +16,11 @@ import {
   SCORE_THRESHOLD, SCORE_RULE_1, SCORE_RULE_2_HIGH, SCORE_RULE_2_LOW,
   SCORE_RULE_3, SCORE_RULE_5, RISK_LEVEL,
   SCORE_RULE_4A_SAME_PAGE, SCORE_RULE_4A_DEAD_LINK,
+  SCORE_RULE_4A_DUPLICATE_LINK, SCORE_RULE_4A_DOWNLOAD_LINK_BONUS,
   SCORE_RULE_4B_DOWNLOAD_BTN, SCORE_RULE_4B_FILE_LINK, SCORE_RULE_4B_ARCHIVE_LINK,
   RULE_2_DOMAIN_SUSPICION_THRESHOLD,
-  ARCHIVE_EXTENSIONS, AI_PAGE_THRESHOLDS, SAME_PAGE_LINK_THRESHOLD
+  ARCHIVE_EXTENSIONS, AI_PAGE_THRESHOLDS, SAME_PAGE_LINK_THRESHOLD,
+  DUPLICATE_LINK_THRESHOLD
 } from '../utils/constants.js';
 
 export class ScoringEngine {
@@ -143,14 +145,6 @@ export class ScoringEngine {
       detail: '', detailCN: '', icpFound: false, icpNumbers: []
     };
 
-    // 仅对中国品牌或.cn域名检查ICP
-    const isChinese = DomainDatabase.isChineseBrand(domain);
-    if (!isChinese) {
-      result.detail = '非中国品牌网站，跳过ICP检查';
-      result.detailCN = '- ICP备案: 不适用';
-      return result;
-    }
-
     // 如果是官方域名本尊，跳过
     const official = DomainDatabase.findByDomain(domain);
     if (official) {
@@ -159,7 +153,7 @@ export class ScoringEngine {
       return result;
     }
 
-    // 搜索ICP备案号
+    // 对所有网站搜索ICP备案号
     const icpResult = IcpUtils.searchIcpNumber(pageText, icpStrings);
 
     if (icpResult.found) {
@@ -168,10 +162,10 @@ export class ScoringEngine {
       result.detail = `检测到ICP备案号: ${icpResult.numbers[0]}`;
       result.detailCN = `✓ ICP备案: 已检测到 (${icpResult.numbers[0]})`;
     } else {
-      result.score = SCORE_RULE_3;  // +100
+      result.score = SCORE_RULE_3;  // +50
       result.triggered = true;
-      result.detail = `未检测到ICP备案号（域名${domain}疑似中国网站）`;
-      result.detailCN = `✗ ICP备案: 未检测到备案号（中国网站必备）`;
+      result.detail = `未检测到ICP备案号（域名${domain}）`;
+      result.detailCN = `✗ ICP备案: 未检测到备案号`;
     }
 
     return result;
@@ -180,9 +174,11 @@ export class ScoringEngine {
   // ==================== 规则四：链接分析 ====================
   /**
    * ┌─ Part A（先执行）:
-   * │  ① ≥3个链接指向当前页本身 → +30
-   * │  ② ≥1个死链                → +30
-   * │  ①+② 可叠加（最高+60）
+   * │  ① ≥3个链接指向当前页本身（完整URL完全一致）         → +20
+   * │  ② ≥1个死链（指向不存在子页面，非hash/js占位）       → +20
+   * │  ③ ≥4个不同元素指向同一个链接                         → +20
+   * │     若该链接为下载链接（含down/download等）            → 再+10
+   * │  ①+②+③ 可叠加（最高+70）
    * └─ Part B（仅当Part A总分为0时才执行）:
    *     a. 外链绑定在"下载"按钮上       → +10
    *     b. 外链指向文件                 → +10
@@ -203,16 +199,32 @@ export class ScoringEngine {
     let partAScore = 0;
     const partAReasons = [];
 
-    // Part A-①
+    // Part A-①：≥5个链接指向当前页本身（完整URL完全一致）
     if (linkMetrics.samePageLinks >= SAME_PAGE_LINK_THRESHOLD) {
       partAScore += SCORE_RULE_4A_SAME_PAGE;
-      partAReasons.push(linkMetrics.samePageLinks + '个链接指向当前页');
+      partAReasons.push(linkMetrics.samePageLinks + '个链接完全指向当前页');
     }
 
-    // Part A-②
+    // Part A-②：≥1个死链（HEAD请求验证为不存在子页面）
     if (linkMetrics.deadLinks >= 1) {
       partAScore += SCORE_RULE_4A_DEAD_LINK;
-      partAReasons.push(linkMetrics.deadLinks + '个死链/占位链接');
+      partAReasons.push(linkMetrics.deadLinks + '个死链/不存在子页面');
+    }
+
+    // Part A-③：≥4个不同元素指向同一个链接
+    if (linkMetrics.hasDuplicateLinks && linkMetrics.duplicateLinks) {
+      for (const dup of linkMetrics.duplicateLinks) {
+        if (dup.elementCount >= DUPLICATE_LINK_THRESHOLD) {
+          partAScore += SCORE_RULE_4A_DUPLICATE_LINK;
+          partAReasons.push(dup.elementCount + '个不同元素指向同一链接');
+          // 附加分：该链接为下载链接
+          if (dup.isDownloadLink) {
+            partAScore += SCORE_RULE_4A_DOWNLOAD_LINK_BONUS;
+            partAReasons.push('该重复链接为下载链接');
+          }
+          break; // 只计一次（取第一个满足条件的）
+        }
+      }
     }
 
     if (partAScore > 0) {

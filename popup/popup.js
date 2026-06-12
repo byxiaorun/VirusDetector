@@ -21,6 +21,7 @@
     officialLinkText: $('official-link-text'),
     safetyTips: $('safety-tips'),
     refreshBtn: $('refresh-btn'),
+    whitelistBtn: $('whitelist-btn'),
     detailRules: {
       rule1: $('detail-rule1'), rule2: $('detail-rule2'),
       rule3: $('detail-rule3'), rule4: $('detail-rule4'),
@@ -35,6 +36,20 @@
     els.safetyTips.style.display = 'none';
     els.officialLinkSection.style.display = 'none';
     els.header.className = 'header-safe';
+    els.header.style.background = '';
+    // 清除白名单指示器
+    var indicator = $('whitelist-indicator');
+    if (indicator) indicator.remove();
+  }
+
+  function updateWhitelistButton(isWhitelisted) {
+    if (isWhitelisted) {
+      els.whitelistBtn.textContent = '❌ 移出白名单';
+      els.whitelistBtn.classList.add('active');
+    } else {
+      els.whitelistBtn.textContent = '⭐ 加入白名单';
+      els.whitelistBtn.classList.remove('active');
+    }
   }
 
   function showSafe(data) {
@@ -45,8 +60,29 @@
     els.officialLinkSection.style.display = 'none';
     els.header.className = 'header-safe';
     els.scoreValue.textContent = data.score || 0;
-    els.statusText.textContent = '安全';
+    els.statusText.textContent = data.isWhitelisted ? '白名单' : '安全';
     els.currentDomain.textContent = data.domain || '-';
+  }
+
+  function showWhitelisted(data) {
+    els.loading.style.display = 'none';
+    els.safePanel.style.display = 'block';
+    els.warningPanel.style.display = 'none';
+    els.safetyTips.style.display = 'none';
+    els.officialLinkSection.style.display = 'none';
+    els.header.className = 'header-safe';
+    els.header.style.background = 'linear-gradient(135deg,#0D47A1,#1565C0)';
+    els.scoreValue.textContent = '✓';
+    els.statusText.textContent = '已加入白名单';
+    els.currentDomain.textContent = data.domain || '-';
+    // 添加白名单指示器
+    if (!$('whitelist-indicator')) {
+      var indicator = document.createElement('div');
+      indicator.id = 'whitelist-indicator';
+      indicator.className = 'whitelist-indicator';
+      indicator.innerHTML = '<span class="wl-icon">🛡️</span> 该网站已加入白名单，跳过所有检测';
+      els.safePanel.insertBefore(indicator, els.safePanel.firstChild);
+    }
   }
 
   function showWarning(data) {
@@ -55,8 +91,12 @@
     els.warningPanel.style.display = 'block';
     els.safetyTips.style.display = 'block';
     els.header.className = 'header-danger';
+    els.header.style.background = '';
     els.warningScoreValue.textContent = data.score || 0;
     els.warningStatusText.textContent = '⚠️ 危险警告';
+    // 清除白名单指示器
+    var indicator = $('whitelist-indicator');
+    if (indicator) indicator.remove();
 
     if (data.correctUrl) {
       els.officialLinkSection.style.display = 'block';
@@ -127,9 +167,17 @@
     }
     if (!data) { showError('无法获取页面分析结果'); return; }
 
-    if (data.score >= SCORE_THRESHOLD) { showWarning(data); }
-    else { showSafe(data); }
+    // 白名单优先显示
+    if (data.isWhitelisted) {
+      showWhitelisted(data);
+    } else if (data.score >= SCORE_THRESHOLD) {
+      showWarning(data);
+    } else {
+      showSafe(data);
+    }
+
     updateDetails(data.ruleResults);
+    updateWhitelistButton(!!data.isWhitelisted);
   }
 
   els.refreshBtn.addEventListener('click', async () => {
@@ -140,6 +188,45 @@
     await render();
     els.refreshBtn.textContent = '🔄 重新检测';
     els.refreshBtn.disabled = false;
+  });
+
+  // 白名单按钮
+  els.whitelistBtn.addEventListener('click', async () => {
+    showLoading();
+    els.whitelistBtn.disabled = true;
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tabs.length === 0) return;
+      const url = tabs[0].url || '';
+
+      // 先检查当前白名单状态
+      const checkResp = await chrome.runtime.sendMessage({
+        type: 'CHECK_WHITELIST',
+        payload: { url }
+      });
+      const isCurrentlyWhitelisted = checkResp?.isWhitelisted || false;
+
+      if (isCurrentlyWhitelisted) {
+        // 移出白名单
+        await chrome.runtime.sendMessage({
+          type: 'REMOVE_FROM_WHITELIST',
+          payload: { url }
+        });
+      } else {
+        // 加入白名单
+        await chrome.runtime.sendMessage({
+          type: 'ADD_TO_WHITELIST',
+          payload: { url }
+        });
+      }
+
+      // 等待后台处理完成
+      await new Promise(r => setTimeout(r, 300));
+      await render();
+    } catch (e) {
+      console.error('[Popup] 白名单操作失败:', e);
+    }
+    els.whitelistBtn.disabled = false;
   });
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') {

@@ -67,6 +67,19 @@ export class CacheManager {
   }
 
   /**
+   * 删除指定域名的缓存
+   * @param {string} domain
+   */
+  static async remove(domain) {
+    try {
+      const key = STORAGE_KEYS.DOMAIN_CACHE + domain;
+      await chrome.storage.local.remove(key);
+    } catch (e) {
+      console.error('[CacheManager] 删除缓存失败:', e);
+    }
+  }
+
+  /**
    * 清除所有域名缓存
    */
   static async clearAll() {

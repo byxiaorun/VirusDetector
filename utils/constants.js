@@ -5,14 +5,16 @@ export const SCORE_THRESHOLD = 100;          // 总阈值
 export const SCORE_RULE_1 = 60;              // 规则一：域名仿冒
 export const SCORE_RULE_2_HIGH = 40;         // 规则二：压缩包下载（域名已有≥30嫌疑）
 export const SCORE_RULE_2_LOW = 10;          // 规则二：压缩包下载（弱信号）
-export const SCORE_RULE_3 = 50;             // 规则三：ICP备案号缺失（.cn或中国品牌）
+export const SCORE_RULE_3 = 50;             // 规则三：ICP备案号缺失（所有网站）
 
 // 规则四：链接分析（替代证书检测）
-export const SCORE_RULE_4A_SAME_PAGE = 30;   // 规则四A-① ≥3个链接指向当前页本身
-export const SCORE_RULE_4A_DEAD_LINK = 30;   // 规则四A-② ≥1个死链/404
-export const SCORE_RULE_4B_DOWNLOAD_BTN = 10; // 规则四B-a 外链绑在下载按钮上
-export const SCORE_RULE_4B_FILE_LINK = 10;   // 规则四B-b 外链指向文件
-export const SCORE_RULE_4B_ARCHIVE_LINK = 10; // 规则四B-b附加 文件是压缩包格式
+export const SCORE_RULE_4A_SAME_PAGE = 20;      // 规则四A-① ≥3个链接指向当前页本身（完全一致URL）
+export const SCORE_RULE_4A_DEAD_LINK = 20;      // 规则四A-② ≥1个死链（指向不存在子页面的链接）
+export const SCORE_RULE_4A_DUPLICATE_LINK = 20; // 规则四A-③ ≥4个不同元素指向同一个链接
+export const SCORE_RULE_4A_DOWNLOAD_LINK_BONUS = 10; // 规则四A-③附加 该链接是下载链接（含download等字样）
+export const SCORE_RULE_4B_DOWNLOAD_BTN = 10;   // 规则四B-a 外链绑在下载按钮上
+export const SCORE_RULE_4B_FILE_LINK = 10;      // 规则四B-b 外链指向文件
+export const SCORE_RULE_4B_ARCHIVE_LINK = 10;   // 规则四B-b附加 文件是压缩包格式
 
 export const SCORE_RULE_5 = 30;              // 规则五：AI生成页面特征
 
@@ -30,7 +32,7 @@ export const ARCHIVE_EXTENSIONS = [
   '.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
   '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh',
   '.tar.bz2', '.tar.xz', '.gz2', '.zst'
-];
+]; 
 
 // ==================== 可疑TLD模式 ====================
 export const SUSPICIOUS_TLD_PATTERNS = [
@@ -59,7 +61,16 @@ export const SUSPICIOUS_TLD_PATTERNS = [
 
 // ==================== 规则四：链接分析 ====================
 // 链接指向当前页的判断阈值
-export const SAME_PAGE_LINK_THRESHOLD = 3;    // ≥3个同页链接 → 触发①
+export const SAME_PAGE_LINK_THRESHOLD = 5;    // ≥5个同页链接 → 触发①
+
+// 重复链接检测阈值（规则四A-③）
+export const DUPLICATE_LINK_THRESHOLD = 4;    // ≥4个不同元素指向同一个链接 → 触发③
+
+// 下载链接检测关键词（规则四A-③附加分）
+export const DOWNLOAD_LINK_KEYWORDS = [
+  'down', 'download', '下載', '下载', 'dl', 'get', 'setup', 'install',
+  'free', 'app', 'exe', 'msi', 'dmg', 'apk', 'zip', 'rar', '7z'
+];
 
 // 下载语义关键词（判断链接是否绑在下载按钮上）
 export const DOWNLOAD_BUTTON_KEYWORDS = [
@@ -109,7 +120,10 @@ export const MSG_TYPES = {
   GET_OFFICIAL_LINK: 'GET_OFFICIAL_LINK',
   CLEAR_TAB_STATE: 'CLEAR_TAB_STATE',
   INJECT_DOWNLOAD_BLOCKER: 'INJECT_DOWNLOAD_BLOCKER',
-  TRIGGER_WARNING_FLOW: 'TRIGGER_WARNING_FLOW'
+  TRIGGER_WARNING_FLOW: 'TRIGGER_WARNING_FLOW',
+  ADD_TO_WHITELIST: 'ADD_TO_WHITELIST',
+  REMOVE_FROM_WHITELIST: 'REMOVE_FROM_WHITELIST',
+  CHECK_WHITELIST: 'CHECK_WHITELIST'
 };
 
 // ==================== 存储键 ====================
@@ -117,7 +131,8 @@ export const STORAGE_KEYS = {
   TAB_STATE_PREFIX: 'tab_state_',
   DOMAIN_CACHE: 'domain_cache_',
   SSL_CACHE: 'ssl_cache_',
-  GLOBAL_SETTINGS: 'global_settings'
+  GLOBAL_SETTINGS: 'global_settings',
+  WHITELIST: 'whitelist'
 };
 
 // 缓存有效期（毫秒）
