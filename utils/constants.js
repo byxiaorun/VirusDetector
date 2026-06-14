@@ -5,7 +5,7 @@
  * 存储键名和缓存策略。所有模块通过 import 共用同一份配置。
  *
  * @module constants
- * @version 1.3.0
+ * @version 2.0.0
  */
 
 // ==================== 评分体系 ====================
@@ -153,3 +153,64 @@ export const STORAGE_KEYS = {
 
 // 缓存有效期（毫秒）
 export const CACHE_TTL = 24 * 60 * 60 * 1000;  // 24小时
+
+// ==================== Whois API 配置 ====================
+/** WhoisCX 免费 API 接口地址 */
+export const WHOIS_API_URL = 'http://api.whoiscx.com/whois/';
+
+/** Whois 查询结果缓存有效期（毫秒），24小时 */
+export const WHOIS_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+/** Whois API 请求超时（毫秒） */
+export const WHOIS_API_TIMEOUT = 8000;
+
+// ==================== 域名注册时间评分规则 ====================
+/**
+ * 基于域名注册天数（creation_days）通过 S 型衰减函数计算可疑加分。
+ * 公式：floor(MAX / (1 + (x / (60 * b))^a))
+ *   x     = creation_days（域名已注册天数）
+ *   MAX   = 最大增加可疑分数
+ *   a     = 衰减速率参数（越大衰减越快）
+ *   b     = 衰减零点参数（控制衰减中心位置，单位：60天）
+ */
+export const SCORE_DOMAIN_AGE_MAX = 60;          // 最大增加可疑分数
+
+/** 域名年龄衰减速率参数 a（越大衰减越快） */
+export const DOMAIN_AGE_DECAY_A = 2;
+
+/** 域名年龄衰减零点参数 b（控制衰减中心位置，单位：60天） */
+export const DOMAIN_AGE_DECAY_B = 1;
+
+// ==================== 下载链接跨域检测规则 ====================
+/** 下载链接与当前页面跨域（不同主域名）基础加分 */
+export const SCORE_DOWNLOAD_CROSS_DOMAIN = 10;
+
+/** 下载链接域名过新（新注册）附加加分 */
+export const SCORE_DOWNLOAD_NEW_DOMAIN = 10;
+
+/** 下载链接域名剩余有效期阈值（天），低于此值视为可疑 */
+export const DOWNLOAD_VALID_DAYS_THRESHOLD = 365;
+
+/** 下载链接域名注册天数阈值（天），低于此值视为新域名 */
+export const DOWNLOAD_CREATION_DAYS_THRESHOLD = 90;
+
+// ==================== 域名年龄减分规则 ====================
+/**
+ * 基于当前页面域名注册天数（creation_days）的减分规则。
+ * 仅当当前可疑总分 >= 阈值时才应用，避免对低分网站的过度减分。
+ *
+ * 减分公式（x = creation_days）：
+ *   x < 180           → bonus = 0
+ *   180 ≤ x < 730     → bonus = floor(MAX_BONUS * (x - 180) / (730 - 180))
+ *   x ≥ 730           → bonus = MAX_BONUS
+ */
+export const SCORE_DOMAIN_AGE_BONUS_MAX = 20;        // 最大减分分值
+
+/** 域名年龄减分应用阈值：当前可疑分数需 >= 此值才执行减分 */
+export const DOMAIN_AGE_BONUS_SCORE_THRESHOLD = 20;
+
+/** 域名年龄减分起始天数：注册天数 < 此值不减分 */
+export const DOMAIN_AGE_BONUS_MIN_DAYS = 180;
+
+/** 域名年龄减分封顶天数：注册天数 ≥ 此值获得最大减分 */
+export const DOMAIN_AGE_BONUS_MAX_DAYS = 730;

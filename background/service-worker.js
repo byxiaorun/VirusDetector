@@ -4,7 +4,7 @@
  * 是整个扩展的中央调度模块，负责协调所有后台任务：
  *
  * @module service-worker
- * @version 1.3.0
+ * @version 2.0.0
  *
  * 核心职责：
  *   1. 页面导航监听 → 白名单检查 → 缓存查询 → 触发评分分析
@@ -57,7 +57,10 @@ function createTabState() {
       rule2: { score: 0, triggered: false, detailCN: '待检测' },
       rule3: { score: 0, triggered: false, detailCN: '待检测' },
       rule4: { score: 0, triggered: false, detailCN: '待检测' },
-      rule5: { score: 0, triggered: false, detailCN: '待检测' }
+      rule5: { score: 0, triggered: false, detailCN: '待检测' },
+      domainAge: { score: 0, triggered: false, detailCN: '待检测' },
+      ageBonus: { score: 0, triggered: false, detailCN: '待检测' },
+      downloadLink: { score: 0, triggered: false, detailCN: '待检测' }
     },
     pageText: '', icpStrings: [], pageMetrics: null, linkMetrics: null,
     downloadState: { hasDownloadedArchive: false, archiveFileName: null },
@@ -600,7 +603,8 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     tabState.downloadState = {
       hasDownloadedArchive: true,
       archiveFileName: downloadItem.filename.split(/[\\/]/).pop(),
-      downloadId: downloadItem.id
+      downloadId: downloadItem.id,
+      downloadUrl: downloadItem.url || ''
     };
 
     // 重新计算规则二（先使用现有tabState评分）
@@ -620,7 +624,13 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 
     tabState.ruleResults.rule2 = rule2Result;
 
-    // 重新计算总分
+    // 下载链接跨域检测（Whois API）：检查下载链接域名是否跨域及是否为新建域名
+    const downloadLinkResult = await ScoringEngine.evaluateDownloadLink(
+      downloadItem.url || '', tabState.domain || ''
+    );
+    tabState.ruleResults.downloadLink = downloadLinkResult;
+
+    // 重新计算总分（包含所有规则 + 下载链接跨域检测）
     const newScore = Object.values(tabState.ruleResults)
       .reduce((sum, r) => sum + (r.score || 0), 0);
     tabState.score = newScore;
@@ -825,4 +835,4 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
-console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v1.3.0 已就绪');
+console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v2.0.0 已就绪');

@@ -7,7 +7,7 @@ import { SUSPICIOUS_TLD_PATTERNS } from './constants.js';
  * 所有方法均为静态同步方法，依赖 constants.js 中的 SUSPICIOUS_TLD_PATTERNS。
  *
  * @module url-utils
- * @version 1.2.1
+ * @version 2.0.0
  */
 export class UrlUtils {
   /**

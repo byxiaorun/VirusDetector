@@ -1,5 +1,5 @@
 /**
- * 银狐木马检测 - Popup UI (v1.3.0)
+ * 银狐木马检测 - Popup UI (v2.0.0)
  * SVG图标系统 + 优化排版 + 白名单极简模式
  */
 (function () {
@@ -50,7 +50,9 @@
     detailRules: {
       rule1: $('detail-rule1'), rule2: $('detail-rule2'),
       rule3: $('detail-rule3'), rule4: $('detail-rule4'),
-      rule5: $('detail-rule5')
+      rule5: $('detail-rule5'),
+      domainAge: $('detail-domainAge'), ageBonus: $('detail-ageBonus'),
+      downloadLink: $('detail-downloadLink')
     }
   };
 
