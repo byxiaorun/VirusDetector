@@ -57,7 +57,7 @@ const _FALLBACK_RDAP_SERVERS = new Map([
   ['com', 'https://rdap.verisign.com/com/v1/'],
   ['net', 'https://rdap.verisign.com/net/v1/'],
   ['org', 'https://rdap.publicinterestregistry.org/'],
-  ['cn',  'http://rdap.cnnic.net.cn/'],
+  ['cn',  'https://rdap.cnnic.net.cn/'],
   ['uk',  'https://rdap.nominet.uk/uk/'],
   ['de',  'https://rdap.denic.de/'],
   ['jp',  'https://rdap.nic.ad.jp/jp/'],
@@ -459,63 +459,112 @@ export class RdapClient {
       console.log(`[RdapClient] 使用回退映射查询: ${normalizedDomain} (TLD: ${normalizedDomain.split('.').pop()})`);
     }
 
-    // Step 2: 构造 RDAP 查询 URL
-    const queryUrl = `${baseUrl}domain/${encodeURIComponent(normalizedDomain)}`;
-    console.log(`[RdapClient] 发起 RDAP 查询: ${queryUrl}`);
+    // Step 2: 构造并尝试 RDAP 查询，支持协议回退
+    // 有些 RDAP 服务器仅支持 HTTPS，有些仅支持 HTTP。
+    // 先尝试配置的协议，失败则试另一种协议。
+    const queryPaths = [
+      baseUrl.replace(/\/+$/, '/') + 'domain/' + encodeURIComponent(normalizedDomain)
+    ];
 
-    // Step 3: 发送查询请求
-    let response;
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), RDAP_REQUEST_TIMEOUT);
+    // 生成协议回退 URL（http ↔ https）
+    if (baseUrl.startsWith('https://')) {
+      queryPaths.push(baseUrl.replace(/^https:/, 'http:') + 'domain/' + encodeURIComponent(normalizedDomain));
+    } else if (baseUrl.startsWith('http://')) {
+      queryPaths.push(baseUrl.replace(/^http:/, 'https:') + 'domain/' + encodeURIComponent(normalizedDomain));
+    }
 
-      response = await fetch(queryUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: { 'Accept': 'application/rdap+json, application/json' }
-      });
+    /** @type {Object|null} */
+    let lastFetchError = null;
+    /** @type {Object|null} */
+    let response = null;
+    /** @type {string} */
+    let lastUrl = '';
 
-      clearTimeout(timeoutId);
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        _lastError = { domain: normalizedDomain, phase: 'timeout', message: `请求超时 (${RDAP_REQUEST_TIMEOUT}ms)`, url: queryUrl };
-        console.warn(`[RdapClient] RDAP 查询超时: ${normalizedDomain}`);
-      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
-        _lastError = { domain: normalizedDomain, phase: 'connect', message: `网络连接失败: ${error.message}`, url: queryUrl };
+    for (let attempt = 0; attempt < queryPaths.length; attempt++) {
+      const queryUrl = queryPaths[attempt];
+      const isProtocolFallback = attempt > 0;
+      const protocolLabel = isProtocolFallback
+        ? (queryUrl.startsWith('https://') ? 'HTTPS' : 'HTTP')
+        : '';
+
+      lastUrl = queryUrl;
+      if (isProtocolFallback) {
+        console.log(`[RdapClient] 协议回退尝试 ${protocolLabel}: ${queryUrl}`);
       } else {
-        _lastError = { domain: normalizedDomain, phase: 'connect', message: `请求异常: ${error.message}`, url: queryUrl };
+        console.log(`[RdapClient] 发起 RDAP 查询: ${queryUrl}`);
+      }
+
+      // Step 3: 发送查询请求
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), RDAP_REQUEST_TIMEOUT);
+
+        const resp = await fetch(queryUrl, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'Accept': 'application/rdap+json, application/json' }
+        });
+
+        clearTimeout(timeoutId);
+
+        // Step 4: 检查 HTTP 状态码
+        if (!resp.ok) {
+          const msg = resp.status === 404
+            ? '域名在 RDAP 中未找到（可能未注册）'
+            : `RDAP 服务器返回 HTTP ${resp.status}`;
+          console.warn(`[RdapClient] ${msg}: ${normalizedDomain} (HTTP ${resp.status})`);
+
+          if (resp.status === 404) {
+            return {
+              domain: normalizedDomain,
+              domainSuffix: normalizedDomain.split('.').slice(1).join('.'),
+              creationDays: -1, validDays: -1,
+              creationTime: '', expirationTime: '',
+              isExpire: false, registrarName: '',
+              domainStatus: [], nameServer: [],
+              queryTime: new Date().toISOString(),
+              _rdap: { notFound: true }
+            };
+          }
+
+          // 非 404 仅在最后一次尝试时返回失败
+          if (attempt === queryPaths.length - 1) {
+            _lastError = { domain: normalizedDomain, phase: 'http_status', message: msg, statusCode: resp.status };
+            return null;
+          }
+          continue;
+        }
+
+        response = resp;
+        lastFetchError = null;
+        break; // 成功，跳出循环
+      } catch (error) {
+        lastFetchError = error;
+        if (error.name === 'AbortError') {
+          console.warn(`[RdapClient] RDAP 查询超时 (${protocolLabel || 'primary'}): ${normalizedDomain}`);
+        } else {
+          console.warn(`[RdapClient] RDAP 查询失败 (${protocolLabel || 'primary'}): ${normalizedDomain} (${error.message})`);
+        }
+        // 继续尝试下一个 URL
+      }
+    }
+
+    // 所有尝试均失败
+    if (lastFetchError) {
+      const error = lastFetchError;
+      if (error.name === 'AbortError') {
+        _lastError = { domain: normalizedDomain, phase: 'timeout', message: `请求超时 (${RDAP_REQUEST_TIMEOUT}ms)` };
+      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        _lastError = { domain: normalizedDomain, phase: 'connect', message: `网络连接失败: ${error.message}` };
+      } else {
+        _lastError = { domain: normalizedDomain, phase: 'connect', message: `请求异常: ${error.message}` };
       }
       return null;
     }
 
-    // Step 4: 检查 HTTP 状态码
-    if (!response.ok) {
-      // 404 通常表示域名在 RDAP 中不存在（可注册或未注册）
-      const phase = response.status === 404 ? 'not_found' : 'http_status';
-      const msg = response.status === 404
-        ? '域名在 RDAP 中未找到（可能未注册）'
-        : `RDAP 服务器返回 HTTP ${response.status}`;
-
-      _lastError = { domain: normalizedDomain, phase, message: msg, url: queryUrl, statusCode: response.status };
-      console.warn(`[RdapClient] ${msg}: ${normalizedDomain} (HTTP ${response.status})`);
-
-      if (response.status === 404) {
-        // 404 时返回一个基本信息（域名存在但无注册数据）
-        return {
-          domain: normalizedDomain,
-          domainSuffix: normalizedDomain.split('.').slice(1).join('.'),
-          creationDays: -1,
-          validDays: -1,
-          creationTime: '',
-          expirationTime: '',
-          isExpire: false,
-          registrarName: '',
-          domainStatus: [],
-          nameServer: [],
-          queryTime: new Date().toISOString(),
-          _rdap: { notFound: true }
-        };
-      }
+    // 检查 response 非空（防御性编程）
+    if (!response) {
+      _lastError = { domain: normalizedDomain, phase: 'connect', message: 'RDAP 查询未知错误' };
       return null;
     }
 
@@ -524,7 +573,7 @@ export class RdapClient {
     try {
       json = await response.json();
     } catch (e) {
-      _lastError = { domain: normalizedDomain, phase: 'parse', message: `JSON 解析失败: ${e.message}`, url: queryUrl };
+      _lastError = { domain: normalizedDomain, phase: 'parse', message: `JSON 解析失败: ${e.message}`, url: lastUrl };
       return null;
     }
 
@@ -535,7 +584,7 @@ export class RdapClient {
       console.log(`[RdapClient] RDAP 查询成功: ${normalizedDomain} (注册: ${result.creationTime || '?'}, 过期: ${result.expirationTime || '?'}, 注册商: ${result.registrarName || '?'})`);
       return result;
     } catch (e) {
-      _lastError = { domain: normalizedDomain, phase: 'parse', message: `RDAP 响应解析失败: ${e.message}`, url: queryUrl };
+      _lastError = { domain: normalizedDomain, phase: 'parse', message: `RDAP 响应解析失败: ${e.message}`, url: lastUrl };
       return null;
     }
   }

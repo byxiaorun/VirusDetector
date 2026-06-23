@@ -73,7 +73,8 @@ function _recordError(domain, phase, message, extra = {}) {
     'invalid':    '参数无效'
   }[phase] || phase;
 
-  console.error(`[WhoisClient] ${phaseLabel} (${domain}): ${message}`, extra);
+  const extraSummary = Object.keys(extra).length ? JSON.stringify(extra) : '';
+  console.error(`[WhoisClient] ${phaseLabel} (${domain}): ${message}${extraSummary ? ' | ' + extraSummary : ''}`);
 }
 
 // ==================== 辅助函数 ====================
