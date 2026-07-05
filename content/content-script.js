@@ -5,14 +5,15 @@
  * 在 document_idle 阶段运行，分两次采集（600ms + 3500ms）以捕获懒加载内容。
  *
  * @module content-script
- * @version 2.3.0
+ * @version 2.4.0-alpha.1
  *
  * 职责：
- *   1. 采集链接分析数据 (collectLinkMetrics) — 规则四数据源
+ *   1. 采集链接分析数据 (collectLinkMetrics) — 规则四 + 规则二 Phase A 数据源
  *      - 同页链接（完整 URL 精确匹配）
  *      - 死链检测（HEAD 请求验证，上限 5 个）
  *      - 重复链接追踪（>=4 个元素指向同一链接 → 规则 A-③）
  *      - 外链下载分析（下载按钮文本 + 文件扩展名）
+ *      - 压缩包链接专项采集（同域+跨域全覆盖，为 Rule 2 Phase A 提供主动扫描数据）
  *   2. 采集页面度量 (collectPageMetrics) — 规则五数据源
  *      - DOM节点数、外部资源去重总数、框架标记（HTML全文+window全局变量双重检测）、文本长度
  *   3. 扫描 ICP 备案号 (findIcpStrings) — 规则三数据源
@@ -185,6 +186,64 @@
       if (seen.has(d.href)) return false; seen.add(d.href); return true;
     });
 
+    // ==================== 压缩包下载链接专项采集（Rule 2 Phase A 数据源） ====================
+    // 扫描所有 <a> 标签的第二遍：专门收集指向压缩包文件的链接（同域+跨域全覆盖）
+    // 与 externalDownloadLinks（仅跨域）互补，为 Rule 2 的主动检测提供完整数据
+    var archiveDownloadLinks = [];
+    var archiveSeen = new Set();
+    // 下载关键词（复用于判断链接意图）
+    var DL_KW = ['下载','download','下載','立即下载','免费下载','高速下载',
+      '安全下载','点击下载','直接下载','本地下载','官方下载','download now',
+      'free download','立即安装','一键安装','安装包','setup','install','get started'];
+    var ARCHIVE_EXTS_DEDICATED = ['.zip','.rar','.7z','.tar','.gz','.tar.gz','.tgz',
+      '.bz2','.xz','.z','.iso','.cab','.arj','.lzh','.tar.bz2','.tar.xz','.zst'];
+
+    for (var j = 0; j < links.length; j++) {
+      var alink = links[j];
+      var ahref = (alink.getAttribute('href') || '').trim();
+      if (!ahref) continue;
+      var alowerHref = ahref.toLowerCase();
+
+      // 跳过非压缩包扩展名
+      var matchedExt = null;
+      for (var e = 0; e < ARCHIVE_EXTS_DEDICATED.length; e++) {
+        var ext = ARCHIVE_EXTS_DEDICATED[e];
+        if (alowerHref.endsWith(ext)) {
+          matchedExt = ext;
+          break;
+        }
+      }
+      if (!matchedExt) continue;
+
+      // 跳过 javascript: 和纯锚点
+      if (/^javascript\s*:/i.test(ahref)) continue;
+
+      try {
+        var aresolved = new URL(ahref, window.location.href);
+        var aisCrossDomain = aresolved.hostname !== currentHost;
+
+        // 去重（按完整 URL）
+        var anormalized = aresolved.href.replace(/#.*$/, '');
+        if (archiveSeen.has(anormalized)) continue;
+        archiveSeen.add(anormalized);
+
+        // 检测下载意图：链接文本 + 父元素文本
+        var alinkText = (alink.textContent || '').toLowerCase();
+        var aparentText = (alink.parentElement ? alink.parentElement.textContent : '').toLowerCase();
+        var aariaLabel = (alink.getAttribute('aria-label') || '').toLowerCase();
+        var acombined = alinkText + ' ' + aparentText + ' ' + aariaLabel;
+        var ahasDownloadKW = DL_KW.some(function(kw) { return acombined.includes(kw); });
+
+        archiveDownloadLinks.push({
+          href: ahref.substring(0, 200),
+          text: (alink.textContent || '').trim().substring(0, 80),
+          isCrossDomain: aisCrossDomain,
+          hasDownloadKW: ahasDownloadKW,
+          ext: matchedExt
+        });
+      } catch (e2) { /* URL 解析失败，跳过 */ }
+    }
+
     return {
       totalLinks: links.length,
       samePageLinks: samePageLinks, deadLinks: deadLinks, deadLinkSamples: deadLinkSamples,
@@ -192,6 +251,8 @@
       externalWithDownloadText: unique.filter(function(d) { return d.hasDownloadText; }).length,
       externalFileLinks: unique.filter(function(d) { return d.isFileLink; }).length,
       externalArchiveLinks: unique.filter(function(d) { return d.isArchive; }).length,
+      // 规则二 Phase A 数据源：压缩包下载链接（同域+跨域全覆盖）
+      archiveDownloadLinks: archiveDownloadLinks,
       // 规则四A-③
       duplicateLinks: duplicateLinks,
       hasDuplicateLinks: duplicateLinks.length > 0,

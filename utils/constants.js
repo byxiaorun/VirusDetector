@@ -5,12 +5,15 @@
  * 存储键名和缓存策略。所有模块通过 import 共用同一份配置。
  *
  * @module constants
- * @version 2.3.0
+ * @version 2.4.0-alpha.1
  */
 
 // ==================== 评分体系 ====================
-/** 触发警告的总分阈值 */
+/** 触发警告的总分阈值（注入拦截 + 警告窗口 + 图标变红） */
 export const SCORE_THRESHOLD = 100;
+
+/** 触发下载确认弹窗的阈值（不注入页面拦截，仅弹窗二次确认） */
+export const DOWNLOAD_CONFIRM_THRESHOLD = 80;
 
 // 新规则分值
 export const SCORE_RULE_1 = 60;              // 规则一：域名仿冒
@@ -33,6 +36,25 @@ export const SCORE_RULE_5_PARTIAL = 20;      // 规则五：代码工程化 — 
 
 // 规则二触发阈值：域名嫌疑分达到此值才给高分
 export const RULE_2_DOMAIN_SUSPICION_THRESHOLD = 30;
+
+// ==================== 规则二：主动压缩包链接检测（Phase A） ====================
+/** 主动检测得分上限（页面扫描阶段） */
+export const SCORE_RULE_2_PROACTIVE_MAX = 30;
+
+/** 单个高危压缩包链接（跨域+下载关键词）基础得分 */
+export const SCORE_RULE_2_PER_HIGH_RISK = 10;
+
+/** 单个中危压缩包链接（跨域+无下载关键词）基础得分 */
+export const SCORE_RULE_2_PER_LOW_RISK = 5;
+
+/** 批量分发阈值：压缩包链接数 >= 此值时触发批量加权 */
+export const SCORE_RULE_2_BATCH_THRESHOLD = 3;
+
+/** 批量分发乘数（≥BATCH_THRESHOLD 时基础分×此值） */
+export const SCORE_RULE_2_BATCH_MULTIPLIER = 2.0;
+
+/** 域名嫌疑加权乘数：existingScore >= DOMAIN_SUSPICION_THRESHOLD 时应用 */
+export const SCORE_RULE_2_SUSPICION_MULTIPLIER = 1.5;
 
 // ==================== 风险等级 ====================
 export const RISK_LEVEL = {
@@ -154,7 +176,10 @@ export const MSG_TYPES = {
   TRIGGER_WARNING_FLOW: 'TRIGGER_WARNING_FLOW',
   ADD_TO_WHITELIST: 'ADD_TO_WHITELIST',
   REMOVE_FROM_WHITELIST: 'REMOVE_FROM_WHITELIST',
-  CHECK_WHITELIST: 'CHECK_WHITELIST'
+  CHECK_WHITELIST: 'CHECK_WHITELIST',
+  DOWNLOAD_CONFIRMATION: 'DOWNLOAD_CONFIRMATION',
+  GET_DOWNLOAD_BLACKLIST: 'GET_DOWNLOAD_BLACKLIST',
+  REMOVE_DOWNLOAD_BLACKLIST: 'REMOVE_DOWNLOAD_BLACKLIST'
 };
 
 // ==================== 存储键 ====================
@@ -163,7 +188,9 @@ export const STORAGE_KEYS = {
   DOMAIN_CACHE: 'domain_cache_',
   SSL_CACHE: 'ssl_cache_',
   GLOBAL_SETTINGS: 'global_settings',
-  WHITELIST: 'whitelist'
+  WHITELIST: 'whitelist',
+  DOWNLOAD_BLACKLIST: 'download_blacklist',
+  PENDING_DOWNLOADS: 'pending_downloads'
 };
 
 // 缓存有效期（毫秒）
@@ -214,6 +241,19 @@ export const DOWNLOAD_VALID_DAYS_THRESHOLD = 365;
 
 /** 下载链接域名注册天数阈值（天），低于此值视为新域名 */
 export const DOWNLOAD_CREATION_DAYS_THRESHOLD = 90;
+
+// ==================== 下载域名黑名单 ====================
+/** 下载域名命中黑名单时的额外加分 */
+export const SCORE_DOWNLOAD_BLACKLIST = 20;
+
+/** 是否检测非压缩包可执行文件（.exe/.msi 等），默认关闭，后续由设置页控制 */
+export const DETECT_NON_ARCHIVE_FILES_DEFAULT = false;
+
+/** 黑名单条目过期天数（天），超过此天数无命中自动清理 */
+export const DOWNLOAD_BLACKLIST_CLEANUP_DAYS = 90;
+
+/** 黑名单容量上限（条） */
+export const DOWNLOAD_BLACKLIST_MAX_ENTRIES = 500;
 
 // ==================== 域名年龄减分规则 ====================
 /**

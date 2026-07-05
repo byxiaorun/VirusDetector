@@ -4,18 +4,19 @@
  * 实现多规则评分体系，总分 >= 100 分时判定为危险网站。
  *
  * @module scoring-engine
- * @version 2.3.0
+ * @version 2.4.0-alpha.1
  *
  * 评分规则：
- *   规则一 域名仿冒         → 60 分 | 3 规则递进：精确段匹配 → 边界包含 → 关键词堆叠
- *   规则二 压缩包下载       → 40 分 | 域名已有 >=30 分嫌疑时给高分，否则 10 分弱信号
+ *   规则一 域名仿冒         → 60 分 | 4 层递进匹配（精确段匹配 → 连字符连接匹配 → 边界包含 → 关键词堆叠）
+ *   规则二 压缩包下载       → 最高 40 分 | Phase A 主动扫描跨域压缩包链接（上限 30）+ Phase B 被动下载拦截（上限 40）
  *   规则三 ICP 备案缺失     → 50 分 | 对所有网站检测 ICP 备案号
  *   规则四 链接分析         → 最高 70 分 | Part A (同页/死链/重复链接) + Part B (下载按钮/压缩包链接)
  *   规则五 代码工程化       → 最高 60 分 | 三信号组合判定（DOM复杂度+框架检测+外部资源），2信号+20，3信号+30
  *                              + 子规则：关键词预筛选 + Emoji密度检测（推广页面Emoji滥用），最高+30
  *   域名年龄评分             → 最高 60 分 | 基于 RDAP/WhoisCX 双查询的 S 型衰减函数计分，新注册域名更可疑
  *   域名年龄减分             → 最高 20 分 | 注册时间长的域名可抵消部分可疑分数（需当前分数 >= 20）
- *   下载链接跨域检测         → 最高 20 分 | 跨域下载 + 新注册域名附加分（由 Service Worker 下载事件触发）
+ *   下载链接跨域检测         → 最高 30 分 | 跨域 +10，命中黑名单 +20，新注册域名额外 +10
+ *   下载域名黑名单           → 加成 | Phase A 主动扫描阶段黑名单链接额外加权，跨域检测提分
  *
  * 优化策略：
  *   - 可信平台白名单：Wiki/博客/代码托管等 UGC 平台的注册域命中后跳过规则一，避免误报
@@ -25,11 +26,13 @@
  *   - 规则五区分三信号组合：DOM节点数+框架标记+外部资源，避免对正常简单页面误报
  *   - 规则五子规则：先通过推广关键词预筛选确认页面性质，再计算Emoji密度，分段线性映射加分
  *   - RDAP/WhoisCX 查询结果缓存 24 小时，避免重复请求
+ *   - 下载域名黑名单：跨站情报复用，用户手动拦截后自动加分，90 天自动清理
  */
 
 import { DomainDatabase } from './domain-database.js';
 import { IcpUtils } from './icp-utils.js';
 import { WhoisClient } from './whois-client.js';
+import { DownloadBlacklist } from './download-blacklist.js';
 import { UrlUtils } from '../utils/url-utils.js';
 import { TrustedPlatforms } from '../utils/trusted-platforms.js';
 import {
@@ -39,6 +42,9 @@ import {
   SCORE_RULE_4A_DUPLICATE_LINK, SCORE_RULE_4A_DOWNLOAD_LINK_BONUS,
   SCORE_RULE_4B_DOWNLOAD_BTN, SCORE_RULE_4B_FILE_LINK, SCORE_RULE_4B_ARCHIVE_LINK,
   RULE_2_DOMAIN_SUSPICION_THRESHOLD,
+  SCORE_RULE_2_PROACTIVE_MAX, SCORE_RULE_2_PER_HIGH_RISK, SCORE_RULE_2_PER_LOW_RISK,
+  SCORE_RULE_2_BATCH_THRESHOLD, SCORE_RULE_2_BATCH_MULTIPLIER,
+  SCORE_RULE_2_SUSPICION_MULTIPLIER,
   ARCHIVE_EXTENSIONS, AI_PAGE_THRESHOLDS, SAME_PAGE_LINK_THRESHOLD,
   DUPLICATE_LINK_THRESHOLD,
   SCORE_DOMAIN_AGE_MAX, DOMAIN_AGE_DECAY_A, DOMAIN_AGE_DECAY_B,
@@ -46,7 +52,8 @@ import {
   DOMAIN_AGE_BONUS_MIN_DAYS, DOMAIN_AGE_BONUS_MAX_DAYS,
   EMOJI_PROMO_KEYWORDS, EMOJI_KEYWORD_MATCH_THRESHOLD,
   EMOJI_MIN_TEXT_LENGTH, EMOJI_DENSITY_MAX_SCORE,
-  EMOJI_DENSITY_THRESHOLD_LOW, EMOJI_DENSITY_THRESHOLD_HIGH
+  EMOJI_DENSITY_THRESHOLD_LOW, EMOJI_DENSITY_THRESHOLD_HIGH,
+  SCORE_DOWNLOAD_BLACKLIST
 } from '../utils/constants.js';
 
 export class ScoringEngine {
@@ -91,8 +98,8 @@ export class ScoringEngine {
       result5 = this._evaluateRule5(pageMetrics, domain, pageText);
     }
 
-    // 规则二从下载状态获取（由下载事件异步触发）
-    const result2 = this._evaluateRule2(downloadState, existingScore);
+    // 规则二：Phase A 主动扫描页面压缩包链接 + Phase B 被动检测实际下载
+    const result2 = await this._evaluateRule2(downloadState, linkMetrics, existingScore);
 
     // 域名年龄评分（Whois API）：非官方域名时调用，基于注册天数 S 型衰减计分
     let domainAgeResult = { score: 0, triggered: false, status: 'pass', detail: '', detailCN: '域名年龄: 未检测', creationDays: -1 };
@@ -170,32 +177,131 @@ export class ScoringEngine {
     return result;
   }
 
-  // ==================== 规则二：压缩包下载 (40/10分) ====================
-  static _evaluateRule2(downloadState, existingSuspicionScore) {
+  // ==================== 规则二：压缩包下载 (最高 40 分) ====================
+  /**
+   * 规则二：压缩包下载检测（两阶段递进评分）
+   *
+   * Phase A — 主动检测（页面扫描，L0）：
+   *   扫描页面上所有跨域压缩包下载链接，根据风险分类和数量计算得分。
+   *   上限 30 分。域名嫌疑越高、链接越多，得分越重。
+   *
+   * Phase B — 被动检测（实际下载，L3 兜底）：
+   *   用户实际触发了压缩包下载。域名嫌疑高 → +40，低 → +10。
+   *
+   * 最终得分 = max(Phase A, Phase B)，实现"主动可提前、被动可升级"。
+   *
+   * @param {Object} downloadState - 下载事件状态（被动数据）
+   * @param {Object} linkMetrics   - 链接分析数据（主动数据，来自 Content Script）
+   * @param {number} existingSuspicionScore - 其他规则已累计的分数
+   * @returns {Promise<Object>} 评分结果
+   */
+  static async _evaluateRule2(downloadState, linkMetrics, existingSuspicionScore) {
     const result = {
       score: 0, triggered: false, status: 'pass',
       detail: '', detailCN: '下载检测: 未检测到压缩包',
-      fileName: null
+      fileName: null,
+      proactiveHits: 0,
+      proactiveScore: 0,
+      reactiveTriggered: false
     };
 
-    if (!downloadState || !downloadState.hasDownloadedArchive) {
-      return result;
+    // ═══════════════════════════════════════════════
+    // Phase A — 主动检测（基于页面扫描）
+    // ═══════════════════════════════════════════════
+    const archiveLinks = (linkMetrics && linkMetrics.archiveDownloadLinks)
+      ? linkMetrics.archiveDownloadLinks : [];
+
+    if (archiveLinks.length > 0) {
+      // 1. 筛选跨域链接（同域不计分，仅跟踪）
+      const crossDomainLinks = archiveLinks.filter(l => l.isCrossDomain);
+
+      if (crossDomainLinks.length > 0) {
+        // 2. 对每个跨域压缩包链接分类计分
+        let baseScore = 0;
+        for (const link of crossDomainLinks) {
+          if (link.hasDownloadKW) {
+            baseScore += SCORE_RULE_2_PER_HIGH_RISK;  // 🔴 高危：跨域+下载关键词
+          } else {
+            baseScore += SCORE_RULE_2_PER_LOW_RISK;   // 🟠 中危：跨域+无下载关键词
+          }
+        }
+
+        // 3. 批量加权：≥阈值时基础分翻倍（钓鱼站典型特征：页面塞满下载链接）
+        if (crossDomainLinks.length >= SCORE_RULE_2_BATCH_THRESHOLD) {
+          baseScore = Math.floor(baseScore * SCORE_RULE_2_BATCH_MULTIPLIER);
+        }
+
+        // 4. 域名嫌疑加权：其他规则已有 ≥30 分时乘 1.5
+        if (existingSuspicionScore >= RULE_2_DOMAIN_SUSPICION_THRESHOLD) {
+          baseScore = Math.floor(baseScore * SCORE_RULE_2_SUSPICION_MULTIPLIER);
+        }
+
+        // 5. 检测黑名单命中（每个黑名单链接额外加分）
+        let blacklistBonus = 0;
+        let blacklistHits = 0;
+        for (const link of crossDomainLinks) {
+          let downloadDomain;
+          try {
+            downloadDomain = new URL(link.href, 'http://placeholder').hostname;
+          } catch (e) { continue; }
+          if (await DownloadBlacklist.isBlacklisted(downloadDomain)) {
+            blacklistBonus += SCORE_RULE_2_PER_HIGH_RISK;
+            blacklistHits++;
+          }
+        }
+
+        // 6. 硬上限 30（Phase A 主动得分上限）
+        const proactiveScore = Math.min(baseScore + blacklistBonus, SCORE_RULE_2_PROACTIVE_MAX);
+
+        if (proactiveScore > 0) {
+          result.proactiveScore = proactiveScore;
+          result.proactiveHits = crossDomainLinks.length;
+          result.score = proactiveScore;
+          result.triggered = true;
+
+          const detailParts = [];
+          detailParts.push(crossDomainLinks.length + '个跨域压缩包链接');
+          if (crossDomainLinks.length >= SCORE_RULE_2_BATCH_THRESHOLD) {
+            detailParts.push('批量分发');
+          }
+          if (existingSuspicionScore >= RULE_2_DOMAIN_SUSPICION_THRESHOLD) {
+            detailParts.push('域名已有' + existingSuspicionScore + '分嫌疑');
+          }
+          if (blacklistHits > 0) {
+            detailParts.push(blacklistHits + '个命中下载黑名单');
+          }
+          result.detail = '页面存在压缩包下载链接: ' + detailParts.join('; ') + ' (+' + proactiveScore + ')';
+          result.detailCN = '下载检测: 页面有' + crossDomainLinks.length + '个跨域压缩包链接';
+          if (blacklistHits > 0) {
+            result.detailCN += '（' + blacklistHits + '个命中黑名单）';
+          }
+          result.detailCN += ' +' + proactiveScore;
+        }
+      }
     }
 
-    result.fileName = downloadState.archiveFileName || '未知文件';
+    // ═══════════════════════════════════════════════
+    // Phase B — 被动检测（实际下载发生，L3 兜底）
+    // ═══════════════════════════════════════════════
+    if (downloadState && downloadState.hasDownloadedArchive) {
+      result.fileName = downloadState.archiveFileName || '未知文件';
+      result.reactiveTriggered = true;
 
-    if (existingSuspicionScore >= RULE_2_DOMAIN_SUSPICION_THRESHOLD) {
-      // 域名已有较高嫌疑 → +40
-      result.score = SCORE_RULE_2_HIGH;
-      result.triggered = true;
-      result.detail = `下载压缩包: ${result.fileName} (域名已有${existingSuspicionScore}分嫌疑)`;
-      result.detailCN = `下载检测: 从可疑站点下载压缩包 (${result.fileName})`;
-    } else {
-      // 弱信号 → +10
-      result.score = SCORE_RULE_2_LOW;
-      result.triggered = true;
-      result.detail = `下载压缩包: ${result.fileName} (弱信号)`;
-      result.detailCN = `下载检测: 下载了压缩包 (${result.fileName})`;
+      let reactiveScore;
+      if (existingSuspicionScore >= RULE_2_DOMAIN_SUSPICION_THRESHOLD) {
+        reactiveScore = SCORE_RULE_2_HIGH;  // +40
+      } else {
+        reactiveScore = SCORE_RULE_2_LOW;   // +10
+      }
+
+      // Phase B 可以覆盖 Phase A（实际下载是更强信号）
+      if (reactiveScore > result.score) {
+        result.score = reactiveScore;
+        result.triggered = true;
+        result.detail = '下载压缩包: ' + result.fileName +
+          ' (域名已有' + existingSuspicionScore + '分嫌疑)';
+        result.detailCN = '下载检测: 从可疑站点下载压缩包 (' + result.fileName + ')';
+      }
     }
 
     return result;
@@ -798,11 +904,19 @@ export class ScoringEngine {
       return result;
     }
 
-    // 跨域 → 基础加分 +10
-    result.score = 10;
+    // 跨域 → 基础加分（黑名单域名直接给更高分）
+    const isBlacklisted = await DownloadBlacklist.isBlacklisted(downloadDomain);
+    const baseScore = isBlacklisted ? SCORE_DOWNLOAD_BLACKLIST : 10;  // 黑名单20，常规10
+    result.score = baseScore;
     result.triggered = true;
-    result.detail = `下载链接跨域 (${downloadDomain} ≠ ${pageDomain})，+10`;
-    result.detailCN = `下载链接: 跨域下载 (${downloadDomain}) +10`;
+
+    if (isBlacklisted) {
+      result.detail = `下载链接指向黑名单域名 (${downloadDomain} ≠ ${pageDomain})，+${baseScore}`;
+      result.detailCN = `下载链接: 跨域下载 → 黑名单域名 (${downloadDomain}) +${baseScore}`;
+    } else {
+      result.detail = `下载链接跨域 (${downloadDomain} ≠ ${pageDomain})，+${baseScore}`;
+      result.detailCN = `下载链接: 跨域下载 (${downloadDomain}) +${baseScore}`;
+    }
 
     // 查询下载链接域名的 Whois 信息，检查是否为新注册域名
     const whoisResult = await WhoisClient.lookup(downloadDomain);
