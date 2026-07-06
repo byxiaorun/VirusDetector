@@ -24,11 +24,14 @@
  *   - keywordToEntries：关键词 → 品牌记录列表 映射（O(1) 反查）
  *   - sortedKeywords：按长度降序排列（优先匹配长品牌词，避免短词吞掉长词）
  *
- * 仿冒检测策略（4 规则递进，命中即返回）：
- *   A.  精确段匹配    → 标签段完全等于品牌关键词（所有长度）
- *   A-2.连字匹配      → 标签去分隔符（-/_）后拼接结果等于关键词
- *   B.  边界包含      → 关键词在 label 中出现且位于分隔符边界（仅 kw ≥ 4 字符）
- *   C.  关键词堆叠    → 同一关键词在所有段中精确出现 ≥ 3 次
+ * 仿冒检测策略（5 规则递进 + 去连字符二次检测，命中即返回）：
+ *   A. 精确段匹配    → 标签段完全等于品牌关键词（所有长度）
+ *   B. 标签子串包含  → 关键词在任一 label 中出现（仅 kw ≥ 5，任意位置不要求边界）
+ *   C. 关键词堆叠    → 同一关键词在所有段中精确出现 ≥ 3 次（所有长度）
+ *   D. 约束编辑距离  → Levenshtein ≤ 2 且 lenDiff ≤ 2（仅 kw ≥ 6）
+ *
+ *   去连字符二次检测：若域名含 - 或 _，去除后重新跑 A/B/C 规则，
+ *   覆盖连字符插入 + 子串嵌入的复合变形（如 pay-pal-login.hl.cn）。
  */
 export const SOFTWARE_CATEGORIES = {
   SECURITY: '安全软件',
@@ -155,7 +158,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '谷歌搜索',
-    officialDomains: ['google.com', 'google.cn', 'google.com.hk'],
+    officialDomains: ['google.com', 'google.cn', 'google.com.hk', 'googlemail.com', 'gmail.com'],
     correctUrl: 'https://www.google.com/',
     category: SOFTWARE_CATEGORIES.BROWSER,
     keywords: ['google', 'Google', '谷歌', 'guge'],
@@ -1468,6 +1471,31 @@ const entryByName = new Map();
 /** 所有官方域名的扁平集合 */
 const allOfficialDomains = new Set();
 
+// ==================== 工具函数 ====================
+
+/**
+ * Levenshtein 编辑距离（仅用于规则 D 的长关键词 typo 检测）。
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function _levenshtein(a, b) {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const m = [];
+  for (let i = 0; i <= b.length; i++) m[i] = [i];
+  for (let j = 0; j <= a.length; j++) m[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      m[i][j] = Math.min(
+        m[i - 1][j] + 1, m[i][j - 1] + 1,
+        m[i - 1][j - 1] + (a[j - 1] === b[i - 1] ? 0 : 1)
+      );
+    }
+  }
+  return m[b.length][a.length];
+}
+
 // ==================== detectSpoof 预处理 ====================
 
 /** 关键词 → 品牌记录列表 映射（同一关键词可能属于多个品牌） */
@@ -1550,10 +1578,14 @@ export class DomainDatabase {
   /**
    * 核心方法：检测域名仿冒
    *
-   * 三层递进检测（按关键词长度从长到短遍历，命中即返回）：
-   *   A. 精确段匹配：任一 label 段完全等于关键词
-   *   B. 边界包含（仅 kw.length ≥ 4）：关键词在 label 中出现且左右边界为起始/结束/分隔符
-   *   C. 关键词堆叠：同一关键词在所有段中精确出现 ≥ 3 次
+   * 5 规则递进 + 去连字符二次检测（按关键词长度从长到短遍历，命中即返回）：
+   *   A. 精确段匹配（所有长度）：任一 label 段完全等于关键词
+   *   B. 标签子串包含（仅 kw ≥ 5）：关键词在任一 label 中出现，不要求分隔符边界
+   *   C. 关键词堆叠（所有长度）：同一关键词在所有段中精确出现 ≥ 3 次
+   *   D. 约束编辑距离（仅 kw ≥ 6，dist ≤ 2，lenDiff ≤ 2）：Levenshtein 相似匹配
+   *
+   *   去连字符二次检测：若域名含 - 或 _，去除后重新跑 A/B/C，
+   *   覆盖 pay-pal-login.hl.cn 等连字符 + 子串嵌入复合变形
    *
    * @param {string} hostname - 当前页面的主机名（已由调用方转为小写）
    * @returns {Object|null} 仿冒信息 { entry, officialDomain, correctUrl, matchType, matchedBy }
@@ -1562,99 +1594,118 @@ export class DomainDatabase {
     // 1. 输入规范化：去 www + 小写
     const normalized = hostname.replace(/^www\./i, '').toLowerCase();
 
-    // 2. 标签拆分：按 . 得到 labels，每个 label 再按 -/_ 拆段
-    const labels = normalized.split('.');
-    const allSegments = [];       // 所有 label 的所有段（用于堆叠统计）
-    const labelSegments = [];     // [[segments for label 0], ...]（用于精确段匹配定位）
+    /**
+     * 对一组 labels/segments 执行规则 A/B/C，任一命中即返回结果。
+     * @param {string[]} labels       标签数组
+     * @param {string[]} allSegs      所有段平铺数组
+     * @param {string[][]} labelSegs  每个 label 的段数组
+     * @param {'original'|'dehyphened'} source 来源标记
+     * @returns {Object|null}
+     */
+    const _checkRules = (labels, allSegs, labelSegs, source) => {
+      for (const kw of sortedKeywords) {
+        // ---- 规则 A：精确段匹配（所有长度关键词） ----
+        for (const segs of labelSegs) {
+          for (const seg of segs) {
+            if (seg === kw) {
+              const entry = keywordToEntries.get(kw)[0];
+              return {
+                entry,
+                officialDomain: entry.officialDomains[0],
+                correctUrl: entry.correctUrl,
+                matchType: 'segment_exact_match',
+                matchedBy: `段 "${seg}" 精确匹配关键词 "${kw}"` +
+                  (source === 'dehyphened' ? '（去连字符）' : '')
+              };
+            }
+          }
+        }
 
+        // ---- 规则 B：标签子串包含（仅 kw >= 5，任意位置不需边界） ----
+        if (kw.length >= 5) {
+          for (const label of labels) {
+            if (label.includes(kw)) {
+              const entry = keywordToEntries.get(kw)[0];
+              return {
+                entry,
+                officialDomain: entry.officialDomains[0],
+                correctUrl: entry.correctUrl,
+                matchType: 'substring_include',
+                matchedBy: `标签 "${label}" 包含关键词 "${kw}"` +
+                  (source === 'dehyphened' ? '（去连字符）' : '')
+              };
+            }
+          }
+        }
+
+        // ---- 规则 C：关键词堆叠（所有长度，阈值 ≥3） ----
+        let hitCount = 0;
+        for (const seg of allSegs) {
+          if (seg === kw) hitCount++;
+        }
+        if (hitCount >= 3) {
+          const entry = keywordToEntries.get(kw)[0];
+          return {
+            entry,
+            officialDomain: entry.officialDomains[0],
+            correctUrl: entry.correctUrl,
+            matchType: 'keyword_stuffing',
+            matchedBy: `关键词 "${kw}" 在域名段中重复出现 ${hitCount} 次` +
+              (source === 'dehyphened' ? '（去连字符）' : '')
+          };
+        }
+      }
+      return null;
+    };
+
+    // 2. 构建原始 labels / segments
+    const labels = normalized.split('.');
+    const allSegments = [];
+    const labelSegments = [];
     for (const label of labels) {
       const segs = splitIntoSegments(label);
       labelSegments.push(segs);
       for (const s of segs) allSegments.push(s);
     }
 
-    // 3. 遍历关键词（长→短），任一规则命中即返回
+    // 3. 原始域名 → 规则 A/B/C
+    let result = _checkRules(labels, allSegments, labelSegments, 'original');
+    if (result) return result;
+
+    // 4. 去连字符二次检测（覆盖 pay-pal-login.hl.cn 等复合变形）
+    if (normalized.includes('-') || normalized.includes('_')) {
+      const deHyphened = normalized.replace(/[-_]/g, '');
+      const dhLabels = deHyphened.split('.');
+      const dhAllSegs = [];
+      const dhLabelSegs = [];
+      for (const label of dhLabels) {
+        const segs = splitIntoSegments(label);
+        dhLabelSegs.push(segs);
+        for (const s of segs) dhAllSegs.push(s);
+      }
+      result = _checkRules(dhLabels, dhAllSegs, dhLabelSegs, 'dehyphened');
+      if (result) return result;
+    }
+
+    // 5. 规则 D：约束编辑距离（仅 kw >= 6，dist 1-2，lenDiff ≤ 2）
     for (const kw of sortedKeywords) {
-      // ---- 规则 A：精确段匹配（所有长度关键词） ----
-      for (const segs of labelSegments) {
-        for (const seg of segs) {
-          if (seg === kw) {
-            const entry = keywordToEntries.get(kw)[0];
-            return {
-              entry,
-              officialDomain: entry.officialDomains[0],
-              correctUrl: entry.correctUrl,
-              matchType: 'segment_exact_match',
-              matchedBy: `段 "${seg}" 精确匹配关键词 "${kw}"`
-            };
-          }
-        }
-      }
-
-      // ---- 规则 A-2：连字匹配 —— 标签去除分隔符后精确匹配关键词 ----
-      // 钓鱼攻击常在品牌词中插入连字符：any-desk...
+      if (kw.length < 6) continue;
       for (const label of labels) {
-        if (label.includes('-') || label.includes('_')) {
-          const joined = label.replace(/[-_]/g, '');
-          if (joined === kw) {
-            const entry = keywordToEntries.get(kw)[0];
-            return {
-              entry,
-              officialDomain: entry.officialDomains[0],
-              correctUrl: entry.correctUrl,
-              matchType: 'joined_label_match',
-              matchedBy: `标签 "${label}" 去分隔符后精确匹配关键词 "${kw}"`
-            };
-          }
+        if (Math.abs(label.length - kw.length) > 2) continue;
+        const dist = _levenshtein(label, kw);
+        if (dist >= 1 && dist <= 2) {
+          const entry = keywordToEntries.get(kw)[0];
+          return {
+            entry,
+            officialDomain: entry.officialDomains[0],
+            correctUrl: entry.correctUrl,
+            matchType: 'typosquat',
+            matchedBy: `Levenshtein 距离 ${dist}: "${label}" ≈ "${kw}"`
+          };
         }
-      }
-
-      // ---- 规则 B：边界包含（仅 kw.length >= 4） ----
-      if (kw.length >= 4) {
-        for (const label of labels) {
-          let searchFrom = 0;
-          while (true) {
-            const idx = label.indexOf(kw, searchFrom);
-            if (idx === -1) break;
-
-            const leftOk = idx === 0 || label[idx - 1] === '-' || label[idx - 1] === '_';
-            const rightEnd = idx + kw.length;
-            const rightOk = rightEnd === label.length || label[rightEnd] === '-' || label[rightEnd] === '_';
-
-            if (leftOk && rightOk) {
-              const entry = keywordToEntries.get(kw)[0];
-              return {
-                entry,
-                officialDomain: entry.officialDomains[0],
-                correctUrl: entry.correctUrl,
-                matchType: 'boundary_include',
-                matchedBy: `标签 "${label}" 以边界方式包含关键词 "${kw}"`
-              };
-            }
-
-            searchFrom = idx + 1; // 继续搜索 label 中后续出现位置
-          }
-        }
-      }
-
-      // ---- 规则 C：关键词堆叠（所有长度关键词，阈值 ≥3） ----
-      let hitCount = 0;
-      for (const seg of allSegments) {
-        if (seg === kw) hitCount++;
-      }
-      if (hitCount >= 3) {
-        const entry = keywordToEntries.get(kw)[0];
-        return {
-          entry,
-          officialDomain: entry.officialDomains[0],
-          correctUrl: entry.correctUrl,
-          matchType: 'keyword_stuffing',
-          matchedBy: `关键词 "${kw}" 在域名段中重复出现 ${hitCount} 次`
-        };
       }
     }
 
-    // 4. 无匹配
     return null;
   }
 
