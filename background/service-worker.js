@@ -1501,6 +1501,59 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     await CacheManager.clearAll();
     await DownloadBlacklist.cleanup();
   }
+  // 每次安装/更新后立即检查一次 GitHub 最新版本
+  await checkForUpdate();
+  // 每 6 小时检查一次更新
+  chrome.alarms.create('checkUpdate', { periodInMinutes: 360 });
+});
+
+// ==================== 版本更新检查 ====================
+
+/**
+ * 比较两个 semver 版本号，返回 -1/0/1
+ * @param {string} a - 当前版本
+ * @param {string} b - 远程版本
+ */
+function compareVersions(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+  }
+  return 0;
+}
+
+/** 检查 GitHub 最新 release 版本，与当前版本对比，写入 storage */
+async function checkForUpdate() {
+  try {
+    const resp = await fetch(
+      'https://api.github.com/repos/Lolitide/VirusDetector/releases/latest',
+      { headers: { 'Accept': 'application/vnd.github.v3+json' } }
+    );
+    if (!resp.ok) return;
+    const release = await resp.json();
+    const remoteVer = (release.tag_name || '').replace(/^v/i, '');
+    if (!remoteVer) return;
+
+    const hasUpdate = compareVersions(VERSION, remoteVer) < 0;
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.UPDATE_AVAILABLE]: hasUpdate,
+      [STORAGE_KEYS.LATEST_VERSION]: remoteVer
+    });
+    console.log(`[ServiceWorker] 版本检查: 当前 v${VERSION}, 最新 v${remoteVer}, ${hasUpdate ? '有新版本!' : '已是最新'}`);
+  } catch (e) {
+    // 网络错误静默处理，不影响主流程
+  }
+}
+
+// 定时检查更新
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'checkUpdate') {
+    checkForUpdate();
+  }
 });
 
 // 存储变更监听：白名单 / 黑名单被其他页面修改时使内存缓存失效

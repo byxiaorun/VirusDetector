@@ -201,7 +201,9 @@ export const STORAGE_KEYS = {
   WHITELIST: 'whitelist',
   DOWNLOAD_BLACKLIST: 'download_blacklist',
   PENDING_DOWNLOADS: 'pending_downloads',
-  USER_REPORTS: 'user_reports'
+  USER_REPORTS: 'user_reports',
+  UPDATE_AVAILABLE: 'updateAvailable',
+  LATEST_VERSION: 'latestVersion'
 };
 
 // 缓存有效期（毫秒）

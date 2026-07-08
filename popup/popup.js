@@ -35,9 +35,8 @@
     header: $('header'), loading: $('loading'),
     safePanel: $('safe-panel'), warningPanel: $('warning-panel'),
     whitelistPanel: $('whitelist-panel'),
-    scoreValue: $('score-value'), statusText: $('status-text'),
+    scoreValue: $('score-value'),
     currentDomain: $('current-domain'),
-    riskLevelText: $('risk-level-text'),
     warningScoreValue: $('warning-score-value'),
     warningStatusText: $('warning-status-text'),
     officialLinkSection: $('official-link-section'),
@@ -193,10 +192,7 @@
     els.scoreValue.textContent = score;
     // 动态更新评分卡片（颜色、图标、刻度尺指示器）
     updateScoreDisplay(els.scoreValue, els.safeGaugeIndicator, els.safeScoreIcon, score, false);
-    els.statusText.textContent = '安全';
-    els.currentDomain.textContent = data.domain || '-';
-    els.riskLevelText.textContent = '正常';
-    els.riskLevelText.className = 'info-value safe-text';
+    if (els.currentDomain) els.currentDomain.textContent = data.domain || '-';
   }
 
   function showWhitelisted(data) {
@@ -399,6 +395,14 @@
     });
   }
 
+  // 背景容器（header 区域点击跳转 GitHub）
+  const bgContainer = document.getElementById('bg-container');
+  if (bgContainer) {
+    bgContainer.addEventListener('click', () => {
+      chrome.tabs.create({ url: 'https://github.com/Lolitide/VirusDetector' });
+    });
+  }
+
   // 上报按钮：误报
   const reportFalseBtn = document.getElementById('report-false-btn');
   const reportPhishBtn = document.getElementById('report-phish-btn');
@@ -535,11 +539,39 @@
     } catch (e) { /* ignore */ }
   })();
 
+  // ==================== 版本更新提示 ====================
+
+  /** 检查是否有新版本可用，控制 header 中 GitHub 按钮的展开动画和提示文字 */
+  async function checkUpdateBadge() {
+    const bgContainer = document.getElementById('bg-container');
+    const tooltip = document.getElementById('github-tooltip');
+    if (!bgContainer || !tooltip) return;
+
+    try {
+      const stored = await chrome.storage.local.get('updateAvailable');
+      if (stored && stored.updateAvailable) {
+        // 有新版本 → 自动展开并维持，显示"新版本!"
+        bgContainer.classList.add('expanded');
+        tooltip.textContent = '新版本!';
+      } else {
+        // 无新版本 → 仅 hover 时展开，显示"了解更多"
+        bgContainer.classList.remove('expanded');
+        tooltip.textContent = '了解更多';
+      }
+    } catch (e) {
+      // 读取失败时保持默认状态（无更新）
+    }
+  }
+
   // ==================== 初始化 ====================
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     render();
+    checkUpdateBadge();
   } else {
-    document.addEventListener('DOMContentLoaded', render);
+    document.addEventListener('DOMContentLoaded', () => {
+      render();
+      checkUpdateBadge();
+    });
   }
 })();
