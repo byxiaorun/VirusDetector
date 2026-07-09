@@ -475,6 +475,31 @@ class SettingsApp {
       }
     });
 
+    // Drawer toggle (hamburger button)
+    const drawerToggle = document.getElementById('drawer-toggle-btn');
+    if (drawerToggle) {
+      drawerToggle.addEventListener('click', () => this._toggleDrawer());
+    }
+
+    // Drawer close button (inside sidebar)
+    const drawerClose = document.getElementById('drawer-close-btn');
+    if (drawerClose) {
+      drawerClose.addEventListener('click', () => this._closeDrawer());
+    }
+
+    // Overlay click to close drawer
+    const drawerOverlay = document.getElementById('drawer-overlay');
+    if (drawerOverlay) {
+      drawerOverlay.addEventListener('click', () => this._closeDrawer());
+    }
+
+    // Auto-close drawer when resizing from narrow to wide
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 720) {
+        this._closeDrawer();
+      }
+    });
+
   }
 
   // ==================== 设置变更 ====================
@@ -583,9 +608,32 @@ class SettingsApp {
     });
   }
 
+  // ==================== 抽屉菜单 ====================
+
+  /** 切换侧栏抽屉打开/关闭 */
+  _toggleDrawer() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('drawer-overlay');
+    if (!sidebar || !overlay) return;
+    const isOpen = sidebar.classList.toggle('open');
+    overlay.classList.toggle('open', isOpen);
+    document.body.classList.toggle('drawer-active', isOpen);
+  }
+
+  /** 关闭侧栏抽屉 */
+  _closeDrawer() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('drawer-overlay');
+    if (!sidebar || !overlay) return;
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+    document.body.classList.remove('drawer-active');
+  }
+
   // ==================== 分区切换 ====================
 
   _switchSection(sectionId) {
+    this._closeDrawer();
     this._activeSection = sectionId;
     try { localStorage.setItem('vt_activeSection', sectionId); } catch(e) {}
     this._renderSection(sectionId);
@@ -1243,6 +1291,13 @@ class SettingsApp {
               </button>
            </div>
             <div id="update-status">加载中...</div>
+            <div class="list-actions" style="margin-top:8px;">
+              
+              <a id="download-update-btn" class="btn btn-primary" style="display:none;" href="#" target="_blank" rel="noopener">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                前往下载
+              </a>
+            </div>
           </div>
           <div class="about-card">
             <h3>

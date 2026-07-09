@@ -9,7 +9,7 @@
 
 // ==================== 版本号（统一入口） ====================
 /** 当前扩展版本号，所有模块引用此常量，发版时仅需修改此处 + manifest.json + README */
-export const VERSION = '2.4.2';
+export const VERSION = '2.5.0';
 
 // ==================== 评分体系 ====================
 /** 触发警告的总分阈值（注入拦截 + 警告窗口 + 图标变红） */
@@ -285,6 +285,34 @@ export const DOWNLOAD_BLACKLIST_CLEANUP_DAYS = 90;
 
 /** 黑名单容量上限（条） */
 export const DOWNLOAD_BLACKLIST_MAX_ENTRIES = 500;
+
+// ==================== Resource Resolver 配置 ====================
+/**
+ * Resource Resolver 的运行时参数。
+ * 与 background/resource-resolver/config.js 保持同步。
+ */
+
+/** Resource Resolver 最大递归深度（0=页面本身，最多向下 N 层） */
+export const RESOLVER_MAX_DEPTH = 3;
+
+/** Resource Resolver 整个解析过程最多处理的资源数 */
+export const RESOLVER_MAX_TOTAL_RESOURCES = 20;
+
+/** TXT 文件最大下载大小（字节） */
+export const RESOLVER_MAX_TXT_SIZE = 256 * 1024; // 256KB
+
+/** 单个资源 fetch 超时（毫秒） */
+export const RESOLVER_PER_RESOURCE_TIMEOUT = 2000;
+
+/** Resource Resolver 总超时（毫秒） */
+export const RESOLVER_TOTAL_TIMEOUT = 5000;
+
+/** 可执行程序文件扩展名（受 detectNonArchiveFiles 开关控制） */
+export const EXECUTABLE_EXTENSIONS = [
+  '.exe', '.msi', '.apk', '.pkg', '.appx', '.deb', '.rpm',
+  '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar',
+  '.bin', '.run', '.sh', '.dmg'
+];
 
 // ==================== 域名年龄减分规则 ====================
 /**

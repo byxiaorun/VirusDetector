@@ -427,6 +427,199 @@
     };
   }
 
+  // ==================== Resource Resolver 数据采集 ====================
+  /**
+   * 采集页面资源数据供 Resource Resolver 使用。
+   * 提取 HTML 中的所有 URL、Inline Script 内容、Meta Refresh、iframe src。
+   * 不修改任何现有函数，仅新增数据采集层。
+   */
+  function extractAllHtmlUrls() {
+    var currentUrl = window.location.href;
+    var currentHost = window.location.hostname;
+    var results = [];
+
+    // 扫描所有带 URL 属性的标签
+    var urlElements = [
+      { sel: 'a[href]', attr: 'href' },
+      { sel: 'link[href]', attr: 'href' },
+      { sel: 'script[src]', attr: 'src' },
+      { sel: 'img[src]', attr: 'src' },
+      { sel: 'iframe[src]', attr: 'src' },
+      { sel: 'form[action]', attr: 'action' },
+      { sel: 'source[src]', attr: 'src' },
+      { sel: 'video[src]', attr: 'src' },
+      { sel: 'audio[src]', attr: 'src' },
+      { sel: 'object[data]', attr: 'data' },
+      { sel: 'embed[src]', attr: 'src' }
+    ];
+
+    var seenUrls = new Set();
+
+    for (var i = 0; i < urlElements.length; i++) {
+      var item = urlElements[i];
+      try {
+        var elements = document.querySelectorAll(item.sel);
+        for (var j = 0; j < elements.length; j++) {
+          var el = elements[j];
+          var rawUrl = (el.getAttribute(item.attr) || '').trim();
+          if (!rawUrl) continue;
+
+          // 跳过 javascript:/data: 等非 HTTP 协议
+          if (/^(javascript|data|mailto|tel|file|vbscript):/i.test(rawUrl)) continue;
+          // 跳过纯锚点
+          if (/^#/.test(rawUrl)) continue;
+
+          // 相对路径 → 绝对 URL
+          try {
+            var absoluteUrl = new URL(rawUrl, currentUrl).href;
+            // 去重
+            var key = absoluteUrl.replace(/#.*$/, '');
+            if (seenUrls.has(key)) continue;
+            seenUrls.add(key);
+
+            results.push({
+              rawUrl: rawUrl.substring(0, 300),
+              absoluteUrl: absoluteUrl,
+              tagName: el.tagName.toLowerCase(),
+              attrName: item.attr
+            });
+          } catch (e) { /* skip invalid */ }
+        }
+      } catch (e) { /* selector error */ }
+    }
+
+    return results;
+  }
+
+  function extractInlineScripts() {
+    var MAX_SCRIPT_LEN = 32 * 1024; // 32KB per script
+    var scripts = document.querySelectorAll('script:not([src])');
+    var results = [];
+    for (var i = 0; i < scripts.length; i++) {
+      var text = scripts[i].textContent || '';
+      if (text.length > 3) {
+        results.push({
+          text: text.length > MAX_SCRIPT_LEN ? text.substring(0, MAX_SCRIPT_LEN) : text,
+          lineCount: text.split('\n').length
+        });
+      }
+    }
+    return results;
+  }
+
+  function extractMetaRefresh() {
+    var metas = document.querySelectorAll('meta[http-equiv="refresh"]');
+    var results = [];
+    for (var i = 0; i < metas.length; i++) {
+      var content = (metas[i].getAttribute('content') || '').trim();
+      if (!content) continue;
+
+      // 解析 content="5;url=..." 或 content="0;URL=..."
+      var urlMatch = content.match(/url\s*=\s*["']?([^"';]+)["']?/i);
+      var delayMatch = content.match(/^(\d+)/);
+
+      results.push({
+        url: urlMatch ? urlMatch[1].trim() : '',
+        delay: delayMatch ? parseInt(delayMatch[1]) : 0,
+        originalContent: content.substring(0, 200)
+      });
+    }
+    return results;
+  }
+
+  function extractIframeSrcs() {
+    var iframes = document.querySelectorAll('iframe[src]');
+    var results = [];
+    for (var i = 0; i < iframes.length; i++) {
+      var src = (iframes[i].getAttribute('src') || '').trim();
+      if (src && !/^(javascript|data|about):/i.test(src)) {
+        results.push(src);
+      }
+    }
+    return results;
+  }
+
+  function collectIntermediatePageLinks() {
+    // 标记可疑中间下载页：<a> 标签指向 HTML 页面，且链接文本含下载关键词
+    var INTERMEDIATE_KW = [
+      '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
+      '安全下载', '点击下载', '直接下载', '本地下载', '官方下载',
+      'download now', 'free download', '立即安装', '一键安装',
+      '安装包', 'setup', 'install', 'get started',
+      '百度网盘', '蓝奏云', '天翼云', '123云盘', '阿里云盘',
+      '迅雷下载', 'bt下载', '磁力链接'
+    ];
+    var ARCHIVE_EXTS_DEDICATED = ['.zip','.rar','.7z','.tar','.gz','.tar.gz','.tgz',
+      '.bz2','.xz','.z','.iso','.cab','.arj','.lzh','.tar.bz2','.tar.xz','.zst',
+      '.exe','.msi','.apk','.dmg','.pkg'];
+    var currentHost = window.location.hostname;
+    var currentUrl = window.location.href;
+    var results = [];
+    var seen = new Set();
+
+    var links = document.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var href = (link.getAttribute('href') || '').trim();
+      if (!href) continue;
+      if (/^(javascript|data|mailto|tel|file|#)/i.test(href)) continue;
+
+      try {
+        var resolved = new URL(href, currentUrl);
+        var lowerPath = resolved.pathname.toLowerCase();
+
+        // 跳过归档/可执行文件（它们不需要中间页抓取）
+        var isArchive = false;
+        for (var e = 0; e < ARCHIVE_EXTS_DEDICATED.length; e++) {
+          if (lowerPath.endsWith(ARCHIVE_EXTS_DEDICATED[e])) { isArchive = true; break; }
+        }
+        if (isArchive) continue;
+
+        // 只关注跨域 HTML 链接
+        if (resolved.hostname === currentHost) continue;
+
+        // 检查下载关键词
+        var linkText = (link.textContent || '').toLowerCase();
+        var parentText = (link.parentElement ? link.parentElement.textContent : '').toLowerCase();
+        var ariaLabel = (link.getAttribute('aria-label') || '').toLowerCase();
+        var className = (link.className || '').toLowerCase();
+        var combined = linkText + ' ' + parentText + ' ' + ariaLabel + ' ' + className;
+        var hasDownloadKW = false;
+        for (var k = 0; k < INTERMEDIATE_KW.length; k++) {
+          if (combined.indexOf(INTERMEDIATE_KW[k].toLowerCase()) !== -1) {
+            hasDownloadKW = true;
+            break;
+          }
+        }
+        if (!hasDownloadKW && resolved.hostname.indexOf('download') === -1 &&
+            resolved.hostname.indexOf('down') === -1 && resolved.hostname.indexOf('dl.') === -1) continue;
+
+        var key = resolved.href.replace(/#.*$/, '');
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          url: resolved.href,
+          text: (link.textContent || '').trim().substring(0, 80),
+          hasDownloadKW: hasDownloadKW
+        });
+      } catch (e2) { /* skip */ }
+    }
+
+    return results;
+  }
+
+  function collectResourceData() {
+    return {
+      htmlUrls: extractAllHtmlUrls(),
+      inlineScripts: extractInlineScripts(),
+      metaRefreshUrls: extractMetaRefresh(),
+      iframeSrcs: extractIframeSrcs(),
+      pageText: (document.body ? document.body.innerText : '').substring(0, 65536) || '',
+      intermediatePages: collectIntermediatePageLinks()
+    };
+  }
+
   function collectPageMetrics(bodyText) {
     bodyText = bodyText || '';
     const html = document.documentElement.outerHTML || '';
@@ -812,10 +1005,11 @@
 
     var hasIcpGovLink = checkIcpGovLink();
     var textSignals = safeCollect(function() { return collectTextSignals(bodyText); }, null);
+    var resourceData = safeCollect(function() { return collectResourceData(); }, null);
     var payload = {
       url: window.location.href, domain: window.location.hostname, title: document.title,
       icpStrings: icpStrings, pageMetrics: pageMetrics, linkMetrics: linkMetrics,
-      hasIcpGovLink: hasIcpGovLink, textSignals: textSignals
+      hasIcpGovLink: hasIcpGovLink, textSignals: textSignals, resourceData: resourceData
     };
 
     // 二次扫描去重：与首次结果比对，无新增数据则跳过发送
@@ -890,6 +1084,7 @@
             icpStrings: safeCollect(findIcpStrings, []),
             hasIcpGovLink: checkIcpGovLink(),
             textSignals: safeCollect(function() { return collectTextSignals(bodyText); }, null),
+            resourceData: safeCollect(function() { return collectResourceData(); }, null),
             title: document.title,
             url: window.location.href
           });

@@ -166,7 +166,7 @@ export class ScoringEngine {
         fileName: null, proactiveHits: 0, proactiveScore: 0, reactiveTriggered: false
       };
     } else {
-      result2 = resolveSetting('rule2Enabled', true) ? await this._evaluateRule2(downloadState, linkMetrics, existingScore, result1.matchedEntry) : { score: 0, triggered: false, status: 'disabled', detail: '规则二已关闭', detailCN: '下载检测: 已关闭', fileName: null, proactiveHits: 0, proactiveScore: 0, reactiveTriggered: false };
+      result2 = resolveSetting('rule2Enabled', true) ? await this._evaluateRule2(downloadState, linkMetrics, existingScore, result1.matchedEntry, ctx.resourceGraph || null) : { score: 0, triggered: false, status: 'disabled', detail: '规则二已关闭', detailCN: '下载检测: 已关闭', fileName: null, proactiveHits: 0, proactiveScore: 0, reactiveTriggered: false };
     }
 
     // 域名年龄评分（Whois API）：非官方域名时调用，基于注册天数 S 型衰减计分
@@ -262,7 +262,7 @@ export class ScoringEngine {
         fileName: null, proactiveHits: 0, proactiveScore: 0, reactiveTriggered: false
       };
     } else {
-      result2 = resolveSetting('rule2Enabled', true) ? await this._evaluateRule2(downloadState, linkMetrics, existingScore, result1.matchedEntry) : { score: 0, triggered: false, status: 'disabled', detail: '规则二已关闭', detailCN: '下载检测: 已关闭', fileName: null, proactiveHits: 0, proactiveScore: 0, reactiveTriggered: false };
+      result2 = resolveSetting('rule2Enabled', true) ? await this._evaluateRule2(downloadState, linkMetrics, existingScore, result1.matchedEntry, ctx.resourceGraph || null) : { score: 0, triggered: false, status: 'disabled', detail: '规则二已关闭', detailCN: '下载检测: 已关闭', fileName: null, proactiveHits: 0, proactiveScore: 0, reactiveTriggered: false };
     }
 
     // 域名年龄：从缓存读取（不发起网络请求），供异步阶段复用
@@ -547,7 +547,7 @@ export class ScoringEngine {
    * @param {number} existingSuspicionScore - 其他规则已累计的分数
    * @returns {Promise<Object>} 评分结果
    */
-  static async _evaluateRule2(downloadState, linkMetrics, existingSuspicionScore, matchedEntry) {
+  static async _evaluateRule2(downloadState, linkMetrics, existingSuspicionScore, matchedEntry, resourceGraph = null) {
     const result = {
       score: 0, triggered: false, status: 'pass',
       detail: '', detailCN: '下载检测: 未检测到压缩包',
@@ -560,8 +560,26 @@ export class ScoringEngine {
     // ═══════════════════════════════════════════════
     // Phase A — 主动检测（基于页面扫描）
     // ═══════════════════════════════════════════════
-    const archiveLinks = (linkMetrics && linkMetrics.archiveDownloadLinks)
-      ? linkMetrics.archiveDownloadLinks : [];
+
+    // 优先使用 ResourceGraph 数据（新版），linkMetrics 作为回退（旧版）
+    let archiveLinks;
+    if (resourceGraph && resourceGraph.discoveredArchives && resourceGraph.discoveredArchives.length > 0) {
+      // 从 ResourceGraph 转换归档节点为 Rule2 可用的格式
+      archiveLinks = resourceGraph.discoveredArchives.map(function(node) {
+        return {
+          href: node.url,
+          text: (node.metadata && node.metadata.textSnippet) || '',
+          isCrossDomain: node.metadata ? node.metadata.isCrossDomain : false,
+          hasDownloadKW: false, // Graph 不跟踪下载关键词，默认为 false
+          ext: (node.metadata && node.metadata.ext) || '',
+          sourceType: node.sourceType || 'resource_graph'
+        };
+      });
+    } else {
+      // 回退：使用 linkMetrics（旧版数据源）
+      archiveLinks = (linkMetrics && linkMetrics.archiveDownloadLinks)
+        ? linkMetrics.archiveDownloadLinks : [];
+    }
 
     if (archiveLinks.length > 0) {
       // 1. 筛选跨域链接（同域不计分，仅跟踪）
@@ -677,6 +695,51 @@ export class ScoringEngine {
       }
     }
 
+    // ═══════════════════════════════════════════════════════
+    // ResourceGraph 专项加分（多级跳转 / 重定向链 / 可执行文件）
+    // ═══════════════════════════════════════════════════════
+    if (resourceGraph) {
+      let graphBonus = 0;
+      const graphBonusParts = [];
+
+      // 1. 多级 TXT 跳转：txtDepth > 1 表示存在 TXT→TXT→...→ZIP 链
+      if (resourceGraph.txtDepth > 1) {
+        const txtBonus = Math.min(15, (resourceGraph.txtDepth - 1) * 8);
+        graphBonus += txtBonus;
+        graphBonusParts.push('TXT' + resourceGraph.txtDepth + '级跳转');
+      }
+
+      // 2. 重定向链：存在 HTTP 30x 重定向
+      if (resourceGraph.redirectChain && resourceGraph.redirectChain.length > 0) {
+        const redirectBonus = Math.min(10, resourceGraph.redirectChain.length * 3);
+        graphBonus += redirectBonus;
+        graphBonusParts.push(resourceGraph.redirectChain.length + '次重定向');
+      }
+
+      // 3. 可执行文件（受 detectNonArchiveFiles 开关控制）
+      if (resolveSetting('detectNonArchiveFiles', false) &&
+          resourceGraph.discoveredExecutables && resourceGraph.discoveredExecutables.length > 0) {
+        const exeCount = resourceGraph.discoveredExecutables.length;
+        const exeBonus = Math.min(20, exeCount * 5);
+        graphBonus += exeBonus;
+        graphBonusParts.push(exeCount + '个可执行文件');
+      }
+
+      if (graphBonus > 0) {
+        result.score = Math.max(result.score, graphBonus);
+        result.proactiveScore = Math.max(result.proactiveScore, graphBonus);
+        if (!result.triggered) result.triggered = true;
+
+        const existingDetail = result.detail ? result.detail + ' | ' : '';
+        result.detail = existingDetail + 'ResourceGraph: ' + graphBonusParts.join('; ') + ' (+' + graphBonus + ')';
+        if (result.detailCN) {
+          result.detailCN += ' | 多级跳转加分+' + graphBonus;
+        } else {
+          result.detailCN = '下载检测: ' + graphBonusParts.join(', ') + ' +' + graphBonus;
+        }
+      }
+    }
+
     // ═══════════════════════════════════════════════
     // Phase B — 被动检测（实际下载发生，L3 兜底）
     // ═══════════════════════════════════════════════
@@ -749,7 +812,7 @@ export class ScoringEngine {
         result.icpVerified = true;
         result.icpNumbers = realNumbers;
         result.detail = `检测到ICP备案号: ${realNumbers[0]}（已核验）`;
-        result.detailCN = `ICP备案: 已检测到 (${realNumbers[0]})`;
+        result.detailCN = `ICP备案: 检测到 (${realNumbers[0]})`;
         return result;
       }
 
