@@ -539,13 +539,84 @@
     return results;
   }
 
+  function collectIntermediatePageLinks() {
+    // 标记可疑中间下载页：<a> 标签指向 HTML 页面，且链接文本含下载关键词
+    var INTERMEDIATE_KW = [
+      '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
+      '安全下载', '点击下载', '直接下载', '本地下载', '官方下载',
+      'download now', 'free download', '立即安装', '一键安装',
+      '安装包', 'setup', 'install', 'get started',
+      '百度网盘', '蓝奏云', '天翼云', '123云盘', '阿里云盘',
+      '迅雷下载', 'bt下载', '磁力链接'
+    ];
+    var ARCHIVE_EXTS_DEDICATED = ['.zip','.rar','.7z','.tar','.gz','.tar.gz','.tgz',
+      '.bz2','.xz','.z','.iso','.cab','.arj','.lzh','.tar.bz2','.tar.xz','.zst',
+      '.exe','.msi','.apk','.dmg','.pkg'];
+    var currentHost = window.location.hostname;
+    var currentUrl = window.location.href;
+    var results = [];
+    var seen = new Set();
+
+    var links = document.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var href = (link.getAttribute('href') || '').trim();
+      if (!href) continue;
+      if (/^(javascript|data|mailto|tel|file|#)/i.test(href)) continue;
+
+      try {
+        var resolved = new URL(href, currentUrl);
+        var lowerPath = resolved.pathname.toLowerCase();
+
+        // 跳过归档/可执行文件（它们不需要中间页抓取）
+        var isArchive = false;
+        for (var e = 0; e < ARCHIVE_EXTS_DEDICATED.length; e++) {
+          if (lowerPath.endsWith(ARCHIVE_EXTS_DEDICATED[e])) { isArchive = true; break; }
+        }
+        if (isArchive) continue;
+
+        // 只关注跨域 HTML 链接
+        if (resolved.hostname === currentHost) continue;
+
+        // 检查下载关键词
+        var linkText = (link.textContent || '').toLowerCase();
+        var parentText = (link.parentElement ? link.parentElement.textContent : '').toLowerCase();
+        var ariaLabel = (link.getAttribute('aria-label') || '').toLowerCase();
+        var className = (link.className || '').toLowerCase();
+        var combined = linkText + ' ' + parentText + ' ' + ariaLabel + ' ' + className;
+        var hasDownloadKW = false;
+        for (var k = 0; k < INTERMEDIATE_KW.length; k++) {
+          if (combined.indexOf(INTERMEDIATE_KW[k].toLowerCase()) !== -1) {
+            hasDownloadKW = true;
+            break;
+          }
+        }
+        if (!hasDownloadKW && resolved.hostname.indexOf('download') === -1 &&
+            resolved.hostname.indexOf('down') === -1 && resolved.hostname.indexOf('dl.') === -1) continue;
+
+        var key = resolved.href.replace(/#.*$/, '');
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          url: resolved.href,
+          text: (link.textContent || '').trim().substring(0, 80),
+          hasDownloadKW: hasDownloadKW
+        });
+      } catch (e2) { /* skip */ }
+    }
+
+    return results;
+  }
+
   function collectResourceData() {
     return {
       htmlUrls: extractAllHtmlUrls(),
       inlineScripts: extractInlineScripts(),
       metaRefreshUrls: extractMetaRefresh(),
       iframeSrcs: extractIframeSrcs(),
-      pageText: (document.body ? document.body.innerText : '').substring(0, 65536) || ''
+      pageText: (document.body ? document.body.innerText : '').substring(0, 65536) || '',
+      intermediatePages: collectIntermediatePageLinks()
     };
   }
 

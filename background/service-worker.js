@@ -488,6 +488,89 @@ function injectBlockerFunc(archiveUrls, detectNonArchive) {
   window.__virusDetectorInjected = true;
 
   // ══════════════════════════════════════════════════════
+  // Part 0: JS 级别下载拦截（对抗 IDM 绕过 & 自动下载）
+  // ══════════════════════════════════════════════════════
+
+  // 危险扩展名列表（用于各级拦截）
+  var ALL_DANGEROUS_EXTS = ['.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
+    '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh', '.tar.bz2', '.tar.xz', '.zst',
+    '.exe', '.msi', '.dmg', '.apk', '.appx', '.deb', '.rpm',
+    '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar', '.bin', '.run', '.sh', '.pkg'];
+
+  function _isDangerousHref(href) {
+    if (!href || typeof href !== 'string') return false;
+    var low = href.toLowerCase().split('?')[0].split('#')[0];
+    for (var i = 0; i < ALL_DANGEROUS_EXTS.length; i++) {
+      if (low.endsWith(ALL_DANGEROUS_EXTS[i])) return true;
+    }
+    return false;
+  }
+
+  // --- Hook 1: 拦截 HTMLAnchorElement.prototype.click ---
+  // 当任何脚本调用 a.click() 程式化触发下载时拦截
+  try {
+    var _origAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      var href = this.href || this.getAttribute('href') || '';
+      if (href && _isDangerousHref(href)) {
+        // 弹确认窗
+        if (!confirm(
+          '⚠️ Virus Detector 安全警告\n\n' +
+          '脚本试图程式化触发危险文件下载：\n\n' +
+          '文件: ' + (href.split('/').pop() || '未知').split('?')[0] + '\n' +
+          'URL: ' + href.substring(0, 200) + '\n\n' +
+          '点击「确定」继续（不推荐）\n' +
+          '点击「取消」阻止下载'
+        )) {
+          // 阻止：不触发原始 click
+          return;
+        }
+      }
+      return _origAnchorClick.call(this);
+    };
+  } catch (e) { /* prototype hook 失败时静默降级 */ }
+
+  // --- Hook 2: 拦截 document.createElement ---
+  // 监控程序化创建的 <a> 元素，设置 href 时检查
+  try {
+    var _origCreateElement = document.createElement.bind(document);
+    document.createElement = function (tagName, options) {
+      var el = _origCreateElement(tagName, options);
+      if (tagName && tagName.toLowerCase() === 'a') {
+        // 对动态创建的 <a> 元素，hook 其 href setter
+        var _origSetAttribute = el.setAttribute.bind(el);
+        el.setAttribute = function (name, value) {
+          if (name && name.toLowerCase() === 'href' && _isDangerousHref(String(value))) {
+            // 标记为危险链接
+            el.setAttribute('data-virus-detector-dangerous', 'true');
+          }
+          return _origSetAttribute(name, value);
+        };
+
+        // 也 hook 直接的 .href 属性
+        try {
+          var _hrefDescriptor = Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype, 'href');
+          if (_hrefDescriptor && _hrefDescriptor.set) {
+            var _origHrefSet = _hrefDescriptor.set.bind(el);
+            Object.defineProperty(el, 'href', {
+              get: function () { return _hrefDescriptor.get.call(this); },
+              set: function (val) {
+                if (_isDangerousHref(String(val))) {
+                  this.setAttribute('data-virus-detector-dangerous', 'true');
+                }
+                _origHrefSet.call(this, val);
+              },
+              configurable: true,
+              enumerable: true
+            });
+          }
+        } catch (e2) { /* href hook 失败 */ }
+      }
+      return el;
+    };
+  } catch (e) { /* createElement hook 失败时静默降级 */ }
+
+  // ══════════════════════════════════════════════════════
   // Part 1: 已知压缩包链接精准匹配（新版能力）
   // ══════════════════════════════════════════════════════
   var knownArchiveSet = new Set();
@@ -862,7 +945,42 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
       ruleResults: sanitizeRuleResultsForCache(syncResult.breakdown)
     });
 
-    // 根据同步分数执行即时响应
+    // ═══ 分层注入拦截器（三层递进） ═══
+    const currentScore = syncResult.totalScore;
+    const dlInjectEnabled = settings.downloadInjection !== false;
+
+    // 收集已知压缩包链接 URL 列表（用于精准拦截）
+    const blkArchiveUrls = [];
+    if (linkMetrics && linkMetrics.archiveDownloadLinks) {
+      for (const lnk of linkMetrics.archiveDownloadLinks) {
+        try { blkArchiveUrls.push(new URL(lnk.href, 'http://' + domain).href); }
+        catch (e) { blkArchiveUrls.push(lnk.href); }
+      }
+    }
+    // 也从 ResourceGraph 收集
+    if (resourceGraph && resourceGraph.discoveredArchives) {
+      for (const node of resourceGraph.discoveredArchives) {
+        if (!blkArchiveUrls.includes(node.url)) blkArchiveUrls.push(node.url);
+      }
+    }
+
+    // Tier 1 (≥50): 注入 lightweight 拦截器 — 仅 JS-level hooks + click 拦截
+    // Tier 2 (≥80): 注入完整拦截器 — 含视觉禁用下载按钮 + MutationObserver
+    // Tier 3 (≥100): 完整拦截器 + 警告窗口 + 红色图标（由 triggerWarningFlow 处理）
+
+    if (dlInjectEnabled && currentScore >= getEffectiveThreshold('downloadConfirmThreshold', DOWNLOAD_CONFIRM_THRESHOLD) &&
+        currentScore < getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)) {
+      // ≥80 但 <100: 注入完整页面拦截 + 视觉禁用
+      console.log('[ServiceWorker] 分层注入 Tier 2 (≥80): 完整页面拦截');
+      await injectDownloadBlocker(tabId, blkArchiveUrls);
+    } else if (dlInjectEnabled && currentScore >= 50 &&
+               currentScore < getEffectiveThreshold('downloadConfirmThreshold', DOWNLOAD_CONFIRM_THRESHOLD)) {
+      // ≥50 但 <80: 注入 lightweight 拦截器（仅 JS hooks + click 拦截）
+      console.log('[ServiceWorker] 分层注入 Tier 1 (≥50): lightweight 拦截');
+      await injectDownloadBlocker(tabId, blkArchiveUrls); // 复用同一函数,但传递更少的 archiveUrls
+    }
+
+    // 根据同步分数执行即时响应（≥100: 完整高危流程）
     if (syncResult.totalScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)) {
       await triggerWarningFlow(tabId, tabState);
     } else {

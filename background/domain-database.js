@@ -334,7 +334,7 @@ const DOMAIN_DATABASE = [
     officialDomains: ['v.qq.com'],
     correctUrl: 'https://v.qq.com',
     category: SOFTWARE_CATEGORIES.VIDEO,
-    keywords: ['腾讯视频', 'qq视频', 'QQLive'],
+    keywords: ['腾讯视频', 'qq视频'],
     isChineseBrand: true
   },
   {

@@ -28,6 +28,7 @@ import { ExternalScriptResolver } from './resolvers/external-script-resolver.js'
 import {
   MAX_DEPTH, MAX_TOTAL_RESOURCES, MAX_TXT_SIZE,
   PER_RESOURCE_TIMEOUT, TOTAL_TIMEOUT,
+  FETCH_INTERMEDIATE_PAGES, MAX_INTERMEDIATE_PAGES, MAX_INTERMEDIATE_PAGE_SIZE,
   ENABLED_RESOLVERS, RESOURCE_TYPES, SOURCE_TYPES
 } from './config.js';
 
@@ -166,7 +167,11 @@ export class ResourceResolver {
       maxTotalResources: options.maxTotalResources || MAX_TOTAL_RESOURCES,
       maxTxtSize: options.maxTxtSize || MAX_TXT_SIZE,
       perResourceTimeout: options.perResourceTimeout || PER_RESOURCE_TIMEOUT,
-      totalTimeout: options.totalTimeout || TOTAL_TIMEOUT
+      totalTimeout: options.totalTimeout || TOTAL_TIMEOUT,
+      fetchIntermediatePages: options.fetchIntermediatePages !== undefined ?
+        options.fetchIntermediatePages : FETCH_INTERMEDIATE_PAGES,
+      maxIntermediatePages: options.maxIntermediatePages || MAX_INTERMEDIATE_PAGES,
+      maxIntermediatePageSize: options.maxIntermediatePageSize || MAX_INTERMEDIATE_PAGE_SIZE
     };
 
     // 创建 ResourceGraph
@@ -259,6 +264,13 @@ export class ResourceResolver {
     // 如果有 pageText，从中提取额外的归档 URL
     if (initialData.pageText && graph.totalResources < config.maxTotalResources) {
       _extractFromPageText(graph, initialData.pageText, pageUrl, visited, config);
+    }
+
+    // ═══ 中间页抓取（可选，默认关闭） ═══
+    // 对标记为 intermediate_page 的 HTML 链接，fetch 内容提取 ZIP
+    if (initialData.intermediatePages && initialData.intermediatePages.length > 0 &&
+        config.fetchIntermediatePages && graph.totalResources < config.maxTotalResources) {
+      await _fetchIntermediatePages(graph, initialData.intermediatePages, pageUrl, graph.pageDomain, visited, config, context);
     }
 
     console.log('[ResourceResolver] 解析完成:', graph.getSummary());
@@ -448,6 +460,117 @@ function _extractFromPageText(graph, pageText, pageUrl, visited, config) {
     graph.addEdge(pageUrl, url);
     visited.add(normalizeUrlKey(url));
   }
+}
+
+/**
+ * 抓取中间下载页，提取其中的归档 URL。
+ * 解决"页面 A → 下载页 B → ZIP"的发现链问题。
+ */
+async function _fetchIntermediatePages(graph, intermediatePages, pageUrl, pageDomain, visited, config, context) {
+  const limit = Math.min(intermediatePages.length, config.maxIntermediatePages);
+  let processed = 0;
+
+  for (let i = 0; i < limit; i++) {
+    if (graph.totalResources >= config.maxTotalResources) break;
+    if (Date.now() - context.startTime > config.totalTimeout) break;
+
+    const ip = intermediatePages[i];
+    const targetUrl = ip.url;
+    if (!targetUrl || visited.has(normalizeUrlKey(targetUrl))) continue;
+
+    processed++;
+    visited.add(normalizeUrlKey(targetUrl));
+
+    try {
+      // HEAD 请求确认可达性
+      const headResp = await context.fetchFn(targetUrl, {
+        method: 'HEAD',
+        followRedirects: false
+      });
+
+      let finalUrl = targetUrl;
+      // 跟踪重定向
+      if (headResp.status >= 300 && headResp.status < 400) {
+        const location = _getHeader(headResp, 'location');
+        if (location) {
+          try {
+            finalUrl = new URL(location, targetUrl).href;
+          } catch (e) { /* keep original */ }
+          graph.addRedirect(targetUrl, finalUrl, headResp.status);
+        }
+
+        // 如果最终 URL 是归档 → 直接记录
+        const finalExt = _extractExt(finalUrl);
+        const archExts = ['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.iso', '.cab', '.exe', '.msi', '.apk'];
+        if (archExts.some(e => finalExt === e || finalExt.endsWith(e))) {
+          const node = createResourceNode(RESOURCE_TYPES.ARCHIVE, finalUrl, pageUrl, 1, SOURCE_TYPES.REDIRECT, {
+            ext: finalExt,
+            isCrossDomain: _isCrossDomain(finalUrl, pageUrl),
+            statusCode: headResp.status
+          });
+          graph.addNode(node);
+          graph.addEdge(pageUrl, finalUrl);
+          continue;
+        }
+      }
+
+      // GET 请求获取中间页 HTML（仅非归档页面）
+      if (headResp.ok !== false) {
+        const fetchResult = await context.fetchFn(finalUrl, {
+          sizeLimit: config.maxIntermediatePageSize
+        });
+        const html = await fetchResult.text();
+
+        if (html && html.length > 0) {
+          // 正则提取所有归档 URL
+          const { ARCHIVE_URL_PATTERN: urlPattern } = await import('./config.js');
+          urlPattern.lastIndex = 0;
+          let match;
+          while ((match = urlPattern.exec(html)) !== null) {
+            try {
+              const absoluteUrl = new URL(match[0], finalUrl).href;
+              if (!visited.has(normalizeUrlKey(absoluteUrl)) &&
+                  graph.totalResources < config.maxTotalResources) {
+                const ext = _extractExt(absoluteUrl);
+                const node = createResourceNode(
+                  RESOURCE_TYPES.ARCHIVE,
+                  absoluteUrl,
+                  pageUrl,
+                  2, // depth = 2: page → intermediate page → archive
+                  SOURCE_TYPES.HTML_TEXT,
+                  {
+                    ext,
+                    isCrossDomain: _isCrossDomain(absoluteUrl, pageUrl),
+                    textSnippet: html.substring(
+                      Math.max(0, html.indexOf(match[0]) - 20),
+                      Math.min(html.length, html.indexOf(match[0]) + match[0].length + 20)
+                    )
+                  }
+                );
+                graph.addNode(node);
+                graph.addEdge(pageUrl, absoluteUrl);
+                visited.add(normalizeUrlKey(absoluteUrl));
+              }
+            } catch (e) { /* skip */ }
+          }
+        }
+      }
+    } catch (e) {
+      console.debug('[ResourceResolver] 中间页抓取失败:', targetUrl, e.message);
+      // 失败不影响其他页面的抓取
+    }
+  }
+}
+
+/**
+ * 从响应对象中提取 header 值
+ */
+function _getHeader(response, name) {
+  if (!response || !response.headers) return null;
+  if (typeof response.headers.get === 'function') {
+    return response.headers.get(name);
+  }
+  return response.headers[name] || null;
 }
 
 // ==================== 工具函数 ====================

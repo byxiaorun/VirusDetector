@@ -37,6 +37,31 @@ export const PER_RESOURCE_TIMEOUT = 2000;
 /** 整个 Resolver 总超时（毫秒），超时后立即返回已构建的 Graph */
 export const TOTAL_TIMEOUT = 5000;
 
+// ==================== 中间页抓取配置 ====================
+
+/** 是否启用中间 HTML 下载页抓取（默认关闭，可通过设置开启） */
+export const FETCH_INTERMEDIATE_PAGES = false;
+
+/** 最大抓取的中间页数量 */
+export const MAX_INTERMEDIATE_PAGES = 3;
+
+/** 中间页 HTML 最大下载大小（字节） */
+export const MAX_INTERMEDIATE_PAGE_SIZE = 128 * 1024; // 128KB
+
+/** 中间页抓取超时（毫秒） */
+export const INTERMEDIATE_PAGE_TIMEOUT = 3000;
+
+/** 下载中间页关键词：链接文本匹配这些词时认为是可疑中间页 */
+export const INTERMEDIATE_PAGE_KEYWORDS = [
+  '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
+  '安全下载', '点击下载', '直接下载', '本地下载', '官方下载',
+  'download now', 'free download', '立即安装', '一键安装',
+  '安装包', 'setup', 'install', 'get started', 'down',
+  'dl', 'get', 'app', 'client', 'file', '链接', 'link',
+  '百度网盘', '蓝奏云', '天翼云', '123云盘', '阿里云盘',
+  '迅雷', 'bt', '磁力', 'magnet'
+];
+
 // ==================== 解析器开关 ====================
 
 /** 第一阶段启用的解析器（按优先级排序） */

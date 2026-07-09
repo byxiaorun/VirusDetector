@@ -28,6 +28,18 @@
         "https://*/*"
       ],
       "js": [
+        "content/navigation-guard.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
         "content/content-script.js"
       ],
       "run_at": "document_idle",
