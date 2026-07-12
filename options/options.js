@@ -922,41 +922,101 @@ class SettingsApp {
     this._showToast('白名单已导出', 'success');
   }
 
-  // ==================== 下载黑名单管理 ====================
+  // ==================== 黑名单管理（站点黑名单 + 下载黑名单） ====================
 
   /**
-   * 渲染下载黑名单 Section：表格列表 + 展开详情 + 删除 + 清除全部
+   * 渲染黑名单 Section：双标签（站点黑名单 / 下载黑名单）
+   * - 站点黑名单：textarea 编辑器，手动增删域名
+   * - 下载黑名单：表格列表 + 展开详情 + 删除 + 清除全部
    */
   async _renderBlacklistSection(container, section) {
     container.innerHTML = `
       <div class="section active">
         <div class="section-header">
           <div class="section-title">${section.label}</div>
-          <div class="section-desc">${section.description}</div>
+          <div class="section-desc">管理站点黑名单和下载域名黑名单</div>
         </div>
         <div class="settings-card">
-          <div id="blacklist-content">
-            <div class="list-empty">
-              <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <p>加载中...</p>
+          <!-- 模式切换 -->
+          <div class="list-mode-tabs">
+            <button class="list-mode-tab active" id="tab-site-bl">站点黑名单</button>
+            <button class="list-mode-tab" id="tab-dl-bl">下载黑名单</button>
+          </div>
+          <!-- 站点黑名单面板 -->
+          <div id="panel-site-bl">
+            <div class="whitelist-hint">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:4px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              提示：站点黑名单中的域名将被直接标记为高风险并触发警告。也可以通过弹窗底部的按钮快速添加当前网站。
+            </div>
+            <div class="list-editor-wrapper">
+              <textarea id="site-bl-editor" class="list-editor" placeholder="每行输入一个域名，例如：&#10;malicious-site.com&#10;phishing-page.org" spellcheck="false"></textarea>
+              <div class="list-editor-count" id="site-bl-count"></div>
+            </div>
+            <div class="list-actions">
+              <button id="site-bl-import-btn" class="btn" title="从 .txt 文件导入域名（合并追加）">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                导入 .txt
+              </button>
+              <button id="site-bl-export-btn" class="btn" title="导出域名列表到 .txt 文件">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                导出 .txt
+              </button>
+              <input type="file" id="site-bl-import-file" accept=".txt,.text" class="file-input-hidden">
+              <button id="site-bl-save-btn" class="btn btn-primary">保存更改</button>
             </div>
           </div>
-          <div class="list-actions" id="blacklist-actions" style="display:none;">
-            <span class="list-editor-count" id="blacklist-count"></span>
-            <button id="bl-clear-all-btn" class="list-clear-all">清除全部黑名单</button>
+          <!-- 下载黑名单面板 -->
+          <div id="panel-dl-bl" style="display:none;">
+            <div id="blacklist-content">
+              <div class="list-empty">
+                <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <p>加载中...</p>
+              </div>
+            </div>
+            <div class="list-actions" id="blacklist-actions" style="display:none;">
+              <span class="list-editor-count" id="blacklist-count"></span>
+              <button id="bl-clear-all-btn" class="list-clear-all">清除全部下载黑名单</button>
+            </div>
           </div>
         </div>
       </div>`;
 
-    await this._loadBlacklist();
+    // 加载站点黑名单
+    await this._loadSiteBlacklist();
+    // 加载下载黑名单
+    await this._loadDlBlacklist();
 
-    // 绑定事件委托
+    // 标签切换
+    const tabSite = document.getElementById('tab-site-bl');
+    const tabDl = document.getElementById('tab-dl-bl');
+    tabSite?.addEventListener('click', () => {
+      tabSite.classList.add('active'); tabDl.classList.remove('active');
+      document.getElementById('panel-site-bl').style.display = '';
+      document.getElementById('panel-dl-bl').style.display = 'none';
+    });
+    tabDl?.addEventListener('click', () => {
+      tabDl.classList.add('active'); tabSite.classList.remove('active');
+      document.getElementById('panel-dl-bl').style.display = '';
+      document.getElementById('panel-site-bl').style.display = 'none';
+    });
+
+    // 站点黑名单按钮事件
+    document.getElementById('site-bl-import-btn')?.addEventListener('click', () => {
+      document.getElementById('site-bl-import-file')?.click();
+    });
+    document.getElementById('site-bl-import-file')?.addEventListener('change', (e) => {
+      if (e.target.files[0]) { this._importSiteBlacklist(e.target.files[0]); e.target.value = ''; }
+    });
+    document.getElementById('site-bl-export-btn')?.addEventListener('click', () => this._exportSiteBlacklist());
+    document.getElementById('site-bl-save-btn')?.addEventListener('click', () => this._saveSiteBlacklist());
+
+    // 下载黑名单事件委托
     const card = container.querySelector('.settings-card');
     card?.addEventListener('click', (e) => {
       const delBtn = e.target.closest('.delete-btn');
       if (delBtn) {
         const domain = delBtn.dataset.domain;
-        if (domain) this._removeBlacklistEntry(domain);
+        if (domain) this._removeDlBlacklistEntry(domain);
         return;
       }
       const row = e.target.closest('.bl-domain');
@@ -968,12 +1028,109 @@ class SettingsApp {
     });
 
     document.getElementById('bl-clear-all-btn')?.addEventListener('click', () => {
-      this._showConfirm('确定要清除全部下载黑名单吗？<br>这将删除所有已记录的黑名单域名。<br>此操作不可撤销！', () => this._clearBlacklist());
+      this._showConfirm('确定要清除全部下载黑名单吗？<br>这将删除所有已记录的下载域名黑名单。<br>此操作不可撤销！', () => this._clearDlBlacklist());
     });
   }
 
-  /** 从 Service Worker 获取黑名单并渲染表格 */
-  async _loadBlacklist() {
+  // ==================== 站点黑名单操作 ====================
+
+  async _loadSiteBlacklist() {
+    try {
+      const resp = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.GET_SITE_BLACKLIST
+      });
+      const blacklist = (resp && resp.data) ? resp.data : {};
+      const domains = Object.keys(blacklist).sort();
+      const editor = document.getElementById('site-bl-editor');
+      if (editor) editor.value = domains.join('\n');
+      this._updateSiteBlCount(domains.length);
+    } catch (e) {
+      console.error('[Settings] 加载站点黑名单失败:', e);
+    }
+  }
+
+  _updateSiteBlCount(count) {
+    const el = document.getElementById('site-bl-count');
+    if (el) el.innerHTML = `共 <strong>${count}</strong> 个域名`;
+  }
+
+  async _saveSiteBlacklist() {
+    const editor = document.getElementById('site-bl-editor');
+    if (!editor) return;
+    const lines = editor.value.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
+    // 获取当前黑名单
+    const resp = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_SITE_BLACKLIST });
+    const current = (resp && resp.data) ? resp.data : {};
+    const currentDomains = new Set(Object.keys(current));
+    const newDomains = new Set(lines);
+
+    // 计算差异
+    const toAdd = lines.filter(d => !currentDomains.has(d));
+    const toRemove = [...currentDomains].filter(d => !newDomains.has(d));
+
+    // 添加新域名
+    for (const domain of toAdd) {
+      await chrome.runtime.sendMessage({
+        type: MSG_TYPES.ADD_SITE_BLACKLIST,
+        payload: { domain, addedBy: 'manual' }
+      });
+    }
+    // 删除移除的域名
+    for (const domain of toRemove) {
+      await chrome.runtime.sendMessage({
+        type: MSG_TYPES.REMOVE_SITE_BLACKLIST,
+        payload: { domain }
+      });
+    }
+
+    if (toAdd.length > 0 || toRemove.length > 0) {
+      this._showToast(`已保存：新增 ${toAdd.length} 个，移除 ${toRemove.length} 个`, 'success');
+    } else {
+      this._showToast('未检测到更改', 'info');
+    }
+    // 重新加载以更新计数
+    await this._loadSiteBlacklist();
+  }
+
+  async _importSiteBlacklist(file) {
+    try {
+      const text = await file.text();
+      const imported = text.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
+      const resp = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_SITE_BLACKLIST });
+      const current = (resp && resp.data) ? resp.data : {};
+      const currentSet = new Set(Object.keys(current));
+
+      let added = 0;
+      for (const domain of imported) {
+        if (!currentSet.has(domain)) {
+          await chrome.runtime.sendMessage({
+            type: MSG_TYPES.ADD_SITE_BLACKLIST,
+            payload: { domain, addedBy: 'manual' }
+          });
+          added++;
+        }
+      }
+      this._showToast(`已导入 ${added} 个新域名`, 'success');
+      await this._loadSiteBlacklist();
+    } catch (e) {
+      this._showToast('导入失败: ' + e.message, 'error');
+    }
+  }
+
+  _exportSiteBlacklist() {
+    const editor = document.getElementById('site-bl-editor');
+    if (!editor) return;
+    const blob = new Blob([editor.value || ''], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'virus-detector-site-blacklist.txt';
+    a.click(); URL.revokeObjectURL(url);
+    this._showToast('站点黑名单已导出', 'success');
+  }
+
+  // ==================== 下载黑名单操作 ====================
+
+  async _loadDlBlacklist() {
     const content = document.getElementById('blacklist-content');
     const actions = document.getElementById('blacklist-actions');
     if (!content || !actions) return;
@@ -989,7 +1146,7 @@ class SettingsApp {
         content.innerHTML = `
           <div class="list-empty">
             <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 11l2 2 4-4"/></svg>
-            <p>黑名单为空</p>
+            <p>下载黑名单为空</p>
             <p style="font-size:12px;color:var(--text3);margin-top:4px;">当您在下载确认弹窗中选择"拉黑下载域名"时，域名将被自动添加到此列表</p>
           </div>`;
         actions.style.display = 'none';
@@ -997,7 +1154,6 @@ class SettingsApp {
       }
 
       const entries = Object.entries(blacklist);
-      // 按 lastHit 降序排列
       entries.sort((a, b) => (b[1].lastHit || 0) - (a[1].lastHit || 0));
 
       let tableHTML = `
@@ -1054,42 +1210,30 @@ class SettingsApp {
     } catch (e) {
       content.innerHTML = `
         <div class="list-empty">
-          <p>加载黑名单失败</p>
+          <p>加载下载黑名单失败</p>
           <p style="font-size:12px;color:var(--text3);margin-top:4px;">${this._escapeHtml(e.message)}</p>
         </div>`;
       actions.style.display = 'none';
     }
   }
 
-  /** 展开/收起黑名单行详情 */
-  _toggleBlacklistExpand(domain) {
-    const escapedId = 'bl-expand-' + this._escapeHtmlAttr(domain);
-    const row = document.getElementById(escapedId);
-    if (row) {
-      row.style.display = row.style.display === 'none' ? '' : 'none';
-    }
-  }
-
-  /** 删除单个黑名单条目 */
-  async _removeBlacklistEntry(domain) {
-    this._showConfirm(`确定要从黑名单中移除 <strong>${domain}</strong> 吗？`, async () => {
+  async _removeDlBlacklistEntry(domain) {
+    this._showConfirm(`确定要从下载黑名单中移除 <strong>${domain}</strong> 吗？`, async () => {
       try {
         await chrome.runtime.sendMessage({
           type: MSG_TYPES.REMOVE_DOWNLOAD_BLACKLIST,
           payload: { domain }
         });
         this._showToast(`已移除 ${domain}`, 'success');
-        await this._loadBlacklist(); // 刷新表格
+        await this._loadDlBlacklist();
       } catch (e) {
         this._showToast('删除失败: ' + e.message, 'error');
       }
     });
   }
 
-  /** 清除全部黑名单 */
-  async _clearBlacklist() {
+  async _clearDlBlacklist() {
     try {
-      // 获取所有条目并逐条删除
       const resp = await chrome.runtime.sendMessage({
         type: MSG_TYPES.GET_DOWNLOAD_BLACKLIST,
         payload: {}
@@ -1103,10 +1247,19 @@ class SettingsApp {
           payload: { domain }
         });
       }
-      this._showToast(`已清除 ${domains.length} 条黑名单记录`, 'success');
-      await this._loadBlacklist();
+      this._showToast(`已清除 ${domains.length} 条下载黑名单记录`, 'success');
+      await this._loadDlBlacklist();
     } catch (e) {
       this._showToast('清除失败: ' + e.message, 'error');
+    }
+  }
+
+  /** 展开/收起下载黑名单行详情 */
+  _toggleBlacklistExpand(domain) {
+    const escapedId = 'bl-expand-' + this._escapeHtmlAttr(domain);
+    const row = document.getElementById(escapedId);
+    if (row) {
+      row.style.display = row.style.display === 'none' ? '' : 'none';
     }
   }
 
@@ -1334,6 +1487,7 @@ SettingsApp.prototype._loadStorageStats = async function () {
     const tabStateKeys = Object.keys(all).filter(k => k.startsWith('tab_state_'));
     const whitelist = all[STORAGE_KEYS.WHITELIST] || [];
     const blacklist = all[STORAGE_KEYS.DOWNLOAD_BLACKLIST] || [];
+    const siteBlacklist = all[STORAGE_KEYS.SITE_BLACKLIST] || [];
     const reports = all[STORAGE_KEYS.USER_REPORTS] || [];
 
     statsEl.innerHTML = `
@@ -1349,6 +1503,7 @@ SettingsApp.prototype._loadStorageStats = async function () {
       <div class="about-row"><span class="about-label">缓存记录</span><span class="about-value">${cacheKeys.length} 条</span></div>
       <div class="about-row"><span class="about-label">标签页状态</span><span class="about-value">${tabStateKeys.length} 个</span></div>
       <div class="about-row"><span class="about-label">白名单域名</span><span class="about-value">${Array.isArray(whitelist) ? whitelist.length : 0} 个</span></div>
+      <div class="about-row"><span class="about-label">站点黑名单</span><span class="about-value">${typeof siteBlacklist === 'object' ? Object.keys(siteBlacklist).length : 0} 条</span></div>
       <div class="about-row"><span class="about-label">下载黑名单</span><span class="about-value">${typeof blacklist === 'object' ? Object.keys(blacklist).length : 0} 条</span></div>
       <div class="about-row"><span class="about-label">上报记录</span><span class="about-value">${Array.isArray(reports) ? reports.length : 0} 条</span></div>
     `;

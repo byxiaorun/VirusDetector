@@ -24,12 +24,14 @@ import { ScoringEngine, setActiveSettings } from './scoring-engine.js';
 import { DomainDatabase } from './domain-database.js';
 import { CacheManager } from './cache-manager.js';
 import { DownloadBlacklist } from './download-blacklist.js';
+import { SiteBlacklist } from './site-blacklist.js';
 import { ResourceResolver } from './resource-resolver/index.js';
 import { registerNonChineseBrandDomains } from './icp-utils.js';
 import { UrlUtils } from '../utils/url-utils.js';
 import {
   SCORE_THRESHOLD, DOWNLOAD_CONFIRM_THRESHOLD, RISK_LEVEL, MSG_TYPES,
   STORAGE_KEYS, CACHE_TTL, DETECT_NON_ARCHIVE_FILES_DEFAULT,
+  SCORE_SITE_BLACKLIST,
   VERSION, REPORT_API_URL, GITHUB_RELEASES_API_URL, GITHUB_RELEASES_PAGE
 } from '../utils/constants.js';
 import { SETTINGS_DEFAULTS } from '../utils/settings-schema.js';
@@ -859,6 +861,25 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
 
   tabState.isWhitelisted = false;
 
+  // 站点黑名单检查：如果在站点黑名单中，直接赋予高分触发警告流程
+  if (await SiteBlacklist.isBlacklisted(domain)) {
+    console.log('[ServiceWorker] 站点在黑名单中，直接标记为高风险:', domain);
+    tabState.score = SCORE_SITE_BLACKLIST;
+    tabState.riskLevel = RISK_LEVEL.WARNING;
+    tabState.isAnalyzed = true;
+    tabState.url = url;
+    tabState.domain = domain;
+    tabState.ruleResults = {
+      siteBlacklist: { triggered: true, score: SCORE_SITE_BLACKLIST, detail: '站点黑名单命中', detailCN: '站点黑名单: 用户标记为恶意网站' }
+    };
+    await saveTabState(tabId, tabState);
+    setIconWarning(tabId, tabState.score);
+    // 触发完整警告流程
+    triggerWarningFlow(tabId, url, domain, tabState.score, tabState).catch(e =>
+      console.error('[ServiceWorker] 黑名单警告流程失败:', e));
+    return;
+  }
+
   // 是否有来自 Content Script 的新数据
   const hasFreshData = !!(pageMetrics || linkMetrics);
 
@@ -1443,12 +1464,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // 实时检查白名单状态
         const whitelisted = await isWhitelisted(ts.url || '');
         ts.isWhitelisted = whitelisted;
+        // 实时检查站点黑名单状态
+        const siteBlacklisted = await SiteBlacklist.isBlacklisted(ts.domain || '');
         sendResponse({
           success: true,
           data: {
             url: ts.url, domain: ts.domain, score: ts.score,
             riskLevel: ts.riskLevel, isAnalyzed: ts.isAnalyzed,
-            isWhitelisted: whitelisted,
+            isWhitelisted: whitelisted, isSiteBlacklisted: siteBlacklisted,
             ruleResults: ts.ruleResults, correctUrl: ts.correctUrl,
             officialName: ts.officialName
           }
@@ -1623,6 +1646,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const targetDomain = message.payload?.domain || '';
       DownloadBlacklist.remove(targetDomain).then(() => {
         sendResponse({ success: true, removed: targetDomain });
+      });
+      return true;
+    }
+
+    // 获取站点黑名单列表
+    case MSG_TYPES.GET_SITE_BLACKLIST:
+    case 'GET_SITE_BLACKLIST': {
+      SiteBlacklist.getAll().then(blacklist => {
+        sendResponse({ success: true, data: blacklist });
+      });
+      return true;
+    }
+
+    // 添加站点黑名单条目
+    case MSG_TYPES.ADD_SITE_BLACKLIST:
+    case 'ADD_SITE_BLACKLIST': {
+      (async () => {
+        try {
+          const domain = message.payload?.domain || '';
+          const addedBy = message.payload?.addedBy || 'manual';
+          if (!domain) { sendResponse({ success: false, error: '缺少 domain' }); return; }
+          await SiteBlacklist.add(domain, { addedBy });
+          sendResponse({ success: true, added: domain });
+        } catch (e) { sendResponse({ success: false, error: e.message }); }
+      })();
+      return true;
+    }
+
+    // 移除站点黑名单条目
+    case MSG_TYPES.REMOVE_SITE_BLACKLIST:
+    case 'REMOVE_SITE_BLACKLIST': {
+      const targetDomain = message.payload?.domain || '';
+      SiteBlacklist.remove(targetDomain).then(() => {
+        sendResponse({ success: true, removed: targetDomain });
+      });
+      return true;
+    }
+
+    // 清除全部站点黑名单
+    case MSG_TYPES.CLEAR_SITE_BLACKLIST:
+    case 'CLEAR_SITE_BLACKLIST': {
+      SiteBlacklist.clearAll().then(() => {
+        sendResponse({ success: true });
       });
       return true;
     }
