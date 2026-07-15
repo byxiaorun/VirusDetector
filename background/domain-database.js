@@ -549,6 +549,14 @@ const DOMAIN_DATABASE = [
     isChineseBrand: true
   },
   {
+    name: '网易有道',
+    officialDomains: ['youdao.com', 'dict.youdao.com', 'fanyi.youdao.com', 'top.youdao.com'],
+    correctUrl: 'https://www.youdao.com',
+    category: SOFTWARE_CATEGORIES.AI_CHAT,
+    keywords: ['有道', 'youdao', '网易有道', '有道词典', '有道翻译'],
+    isChineseBrand: true
+  },
+  {
     name: '智谱清言',
     officialDomains: ['chatglm.cn', 'bigmodel.cn', 'open.bigmodel.cn'],
     correctUrl: 'https://chatglm.cn',
@@ -738,6 +746,14 @@ const DOMAIN_DATABASE = [
     isChineseBrand: true
   },
   {
+    name: '腾讯',
+    officialDomains: ['tencent.com', 'tencent.com.cn', 'qq.com'],
+    correctUrl: 'https://www.tencent.com',
+    category: SOFTWARE_CATEGORIES.IM_SOCIAL,
+    keywords: ['腾讯', 'tencent', '腾讯公司', 'Tencent'],
+    isChineseBrand: true
+  },
+  {
     name: '腾讯云',
     officialDomains: ['cloud.tencent.com', 'tencentcloud.com'],
     correctUrl: 'https://cloud.tencent.com',
@@ -876,6 +892,14 @@ const DOMAIN_DATABASE = [
   },
 
   // ========== 游戏平台 ==========
+  {
+    name: '4399小游戏',
+    officialDomains: ['4399.com', '4399.cn'],
+    correctUrl: 'https://www.4399.com',
+    category: SOFTWARE_CATEGORIES.GAME,
+    keywords: ['4399', '4399小游戏', '4399游戏'],
+    isChineseBrand: true
+  },
   {
     name: 'WeGame',
     officialDomains: ['wegame.com.cn', 'wegame.com'],
@@ -1076,6 +1100,22 @@ function _levenshtein(a, b) {
   return m[b.length][a.length];
 }
 
+/** 最长公共前缀长度 */
+function longestCommonPrefix(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
+/** 最长公共后缀长度 */
+function longestCommonSuffix(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
+  return i;
+}
+
 // ==================== detectSpoof 预处理 ====================
 
 /** 关键词 → 品牌记录列表 映射（同一关键词可能属于多个品牌） */
@@ -1268,12 +1308,22 @@ export class DomainDatabase {
     }
 
     // 5. 规则 D：约束编辑距离（仅 kw >= 6，dist 1-2，lenDiff ≤ 2）
+    //    安全护栏：避免把「真实品牌域名」或「两个无关品牌词」误判为仿冒。
+    //      (a) 关键词含中文时取其纯 ASCII 核心：若输入标签即等于该核心（如 tencent.com
+    //          命中关键词"tencent云"），属真实品牌而非仿冒 → 跳过。
+    //      (b) 要求标签与关键词存在≥3字符的连续公共前缀或后缀，确保是"同一词的错别字"
+    //          而非两个不同品牌词（如 youdao 与 doubao 仅公共后缀"ao"=2 字符，应判为不同品牌）。
     for (const kw of sortedKeywords) {
       if (kw.length < 6) continue;
+      const kwAscii = kw.replace(/[一-鿿]/g, '');
       for (const label of labels) {
         if (Math.abs(label.length - kw.length) > 2) continue;
+        if (kwAscii && label === kwAscii) continue; // (a) 真实品牌核心，非仿冒
         const dist = _levenshtein(label, kw);
         if (dist >= 1 && dist <= 2) {
+          const lcp = longestCommonPrefix(label, kw);
+          const lcs = longestCommonSuffix(label, kw);
+          if (Math.max(lcp, lcs) < 3) continue; // (b) 两个不同品牌词，跳过
           const entry = keywordToEntries.get(kw)[0];
           return {
             entry,

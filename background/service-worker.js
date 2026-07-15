@@ -26,11 +26,13 @@ import { CacheManager } from './cache-manager.js';
 import { DownloadBlacklist } from './download-blacklist.js';
 import { ResourceResolver } from './resource-resolver/index.js';
 import { registerNonChineseBrandDomains } from './icp-utils.js';
+import { IcpApiClient } from './icp-api.js';
 import { UrlUtils } from '../utils/url-utils.js';
 import {
   SCORE_THRESHOLD, DOWNLOAD_CONFIRM_THRESHOLD, RISK_LEVEL, MSG_TYPES,
   STORAGE_KEYS, CACHE_TTL, DETECT_NON_ARCHIVE_FILES_DEFAULT,
-  VERSION, REPORT_API_URL, GITHUB_RELEASES_API_URL, GITHUB_RELEASES_PAGE
+  VERSION, REPORT_API_URL, GITHUB_RELEASES_API_URL, GITHUB_RELEASES_PAGE,
+  ICP_API_CONFIG
 } from '../utils/constants.js';
 import { SETTINGS_DEFAULTS } from '../utils/settings-schema.js';
 
@@ -48,11 +50,36 @@ import { SETTINGS_DEFAULTS } from '../utils/settings-schema.js';
  * @param {string} url
  * @returns {boolean} true 表示应跳过（不分析）
  */
+/**
+ * 判断主机名是否为内网/保留地址（RFC 1918 等），这类地址应跳过整站检测。
+ * 覆盖：回环 127.0.0.0/8、私有 10.0.0.0/8、192.168.0.0/16、172.16.0.0/12、
+ * 链路本地 169.254.0.0/16、以及 localhost。
+ * @param {string} hostname
+ * @returns {boolean}
+ */
+function isPrivateOrLocalIp(hostname) {
+  if (!hostname) return false;
+  if (hostname === 'localhost') return true;
+  const m = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = +m[1], b = +m[2];
+  if (a > 255 || b > 255) return false;
+  if (a === 127) return true;                          // 127.0.0.0/8 回环
+  if (a === 10) return true;                           // 10.0.0.0/8 私有
+  if (a === 192 && b === 168) return true;             // 192.168.0.0/16 私有（路由器/NAS/开发服务器）
+  if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12 私有
+  if (a === 169 && b === 254) return true;             // 169.254.0.0/16 链路本地
+  return false;
+}
+
 function shouldSkipUrl(url) {
   if (!url || typeof url !== 'string') return true;
   try {
-    const protocol = new URL(url).protocol;
-    return protocol !== 'http:' && protocol !== 'https:';
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    // 内网/保留地址：整站跳过检测，避免对 192.168.x.x 等局域网地址误报
+    if (isPrivateOrLocalIp(u.hostname)) return true;
+    return false;
   } catch (e) {
     return true; // 无法解析的 URL 视为应跳过
   }
@@ -903,12 +930,37 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
     }
   }
 
+  // ─── ICP 备案 API 核验：按域名查询备案（页面文本扫描降级为兜底）───
+  // 见 icp-api.js。失败/超时不阻塞分析，规则三会回退到原页面文本扫描。
+  // 读取设置以决定 API 总开关 / 各 provider 开关 / 自定义 apihz 凭据（配置页可控）。
+  const settings = await getSettings();
+  let icpApi = null;
+  try {
+    // 按设置开关覆盖 ICP_API_CONFIG 中各 provider 的 enabled，构造有效数据源列表
+    const effProviders = ICP_API_CONFIG.providers.map(p => {
+      const clone = { ...p };
+      if (p.name === 'uapis') clone.enabled = settings.icpApiProviderUapis !== false;
+      if (p.name === 'apihz') clone.enabled = settings.icpApiProviderApihz !== false;
+      return clone;
+    });
+    const icpOpts = {
+      enabled: settings.icpApiEnabled !== false,   // 总开关（默认开）
+      providers: effProviders,
+      apihzId: settings.icpApiApiahzId || undefined,   // 用户自有 apihz 凭据（绕过 10 次/分钟公共限流）
+      apihzKey: settings.icpApiApiahzKey || undefined
+    };
+    icpApi = await IcpApiClient.query(domain, icpOpts);
+  } catch (e) {
+    console.warn('[ServiceWorker] ICP API 查询失败，回退页面扫描:', e && e.message);
+  }
+
   const ctx = {
     url: tabState.url || url,
     domain: tabState.domain || domain,
     icpStrings: tabState.icpStrings || [],
     textSignals: tabState.textSignals || null,
     hasIcpGovLink: tabState.hasIcpGovLink || false,
+    icpApi, // 新增：备案 API 核验结果（null → 回退页面文本扫描）
     linkMetrics: linkMetrics || tabState.linkMetrics || null,
     downloadState: tabState.downloadState || { hasDownloadedArchive: false },
     pageMetrics: pageMetrics || tabState.pageMetrics || null,
@@ -917,8 +969,7 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
 
   // 运行评分引擎（两阶段：同步首屏 + Whois异步补充）
   try {
-    // 获取当前设置（含阈值覆盖）
-    const settings = await getSettings();
+    // 获取当前设置（含阈值覆盖，已在上方 ICP 核验前读取并缓存）
 
     // ═══ 阶段1：同步评估（规则一~五，不含Whois网络请求）═══
     const syncResult = await ScoringEngine.evaluateSync(ctx, settings);

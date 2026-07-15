@@ -166,12 +166,18 @@ export const EMOJI_DENSITY_THRESHOLD_LOW = 2.0;
 export const EMOJI_DENSITY_THRESHOLD_HIGH = 10.0;
 
 // 主流框架标记 — HTML源码字符串匹配用（content-script 使用此列表做全文搜索）
+// 覆盖主流 SPA 框架 + 常见静态站点生成器（避免对 Docusaurus/MkDocs/Hugo/Astro 等合法站误判"无框架"）
 export const FRAMEWORK_HTML_MARKERS = [
   'react', 'vue', 'angular', 'webpack', '__initial_state__',
-  '_next/', 'nuxt', 'svelte', 'jquery', 'bootstrap',
+  '_next/', 'next/', 'nuxt', 'svelte', 'jquery', 'bootstrap',
   'node_modules', '.jsx', '.tsx', 'data-v-', 'ng-version',
   '__vue__', '__react', 'redux', 'react-dom', 'vue-router',
-  'webpackjsonp', '__webpack_require__', '__nuxt', '__next'
+  'webpackjsonp', '__webpack_require__', '__nuxt', '__next',
+  // —— 静态站点生成器 / 文档框架 ——
+  'docusaurus', 'mkdocs', 'material-docs', 'mkdocs-material',
+  'hugo', '_astro', 'astro', 'gatsby', 'hexo', 'jekyll',
+  'nextra', 'vitepress', 'vuepress', 'docsify', 'sveltekit',
+  'remix', 'eleventy', 'pelican', 'gitbook', 'docusaurus-tag-manager'
 ];
 
 // ==================== 消息类型 ====================
@@ -334,3 +340,64 @@ export const DOMAIN_AGE_BONUS_MIN_DAYS = 365;
 
 /** 域名年龄减分封顶天数：注册天数 ≥ 此值获得最大减分 */
 export const DOMAIN_AGE_BONUS_MAX_DAYS = 730;
+
+// ==================== ICP 备案查询 API 配置 ====================
+// 备案核验改为「按域名查询 API」（见 background/icp-api.js），端点集中于此避免硬编码。
+// 多源备援：主用 uapis（稳定），备援 apihz（公开接口，限流 10 次/分钟）。
+// 每个 provider：
+//   name        展示名
+//   enabled     是否启用
+//   needKey     是否需要 key（apihz 公开 demo 凭据默认可用，故为 false）
+//   rateLimitPerMin  每分钟最大请求数（0/缺省 = 不限）
+//   buildUrl(d, cfg) 拼 URL（cfg 为本 provider 对象，可读取 id/key 等）
+//   parse(data) 解析响应 → { hasIcp, icpNumber?, unitName? }
+export const ICP_API_CONFIG = {
+  cacheTtlMs: 24 * 60 * 60 * 1000, // 域名级缓存 24h
+  timeoutMs: 8000,                  // 单源超时
+  failCacheMs: 5 * 60 * 1000,       // 全源失败短时缓存，避免重试打爆接口
+  providers: [
+    {
+      name: 'uapis',
+      enabled: true,
+      needKey: false,
+      rateLimitPerMin: 0,
+      buildUrl: (domain) => `https://uapis.cn/api/v1/network/icp?domain=${encodeURIComponent(domain)}`,
+      // 响应成功：{"code":"200","serviceLicence":"京ICP证030173号","unitName":"...","msg":"query success"}
+      // 响应无记录：{"code":"200","serviceLicence":"查询失败","unitName":"查询失败","msg":"查询成功"}（autodesk.com/java.com 等外国站）
+      // 注意：uapis 查不到时仍返回 code:200，只是 serviceLicence="查询失败"；必须把"真实备案号"与失败文案区分开，
+      // 否则会把无备案的外国站误判 hasIcp:true，再经规则三步骤 1.5 直接放行，造成漏检。
+      parse: (data) => {
+        const lic = data && typeof data.serviceLicence === 'string' ? data.serviceLicence.trim() : '';
+        // 真实备案号必含「ICP备」或「ICP证」（如"京ICP备10005211号-8"可带分主体序号后缀）；
+        // "查询失败"/空 不含该标记，一律视为无备案
+        const isRealIcp = /ICP[备证]/.test(lic);
+        if (data && (data.code === 200 || data.code === '200') && isRealIcp) {
+          const unit = (data.unitName && data.unitName !== '查询失败') ? data.unitName : '';
+          return { hasIcp: true, icpNumber: lic, unitName: unit };
+        }
+        return { hasIcp: false };
+      }
+    },
+    {
+      name: 'apihz',
+      enabled: true,
+      needKey: false,        // 公开 demo 凭据默认可用；用户可在设置中覆盖 id/key
+      rateLimitPerMin: 10,   // 公开接口限制约 10 次/分钟
+      id: '88888888',
+      key: '88888888',
+      buildUrl: (domain, cfg) => `https://cn.apihz.cn/api/wangzhan/icp.php?id=${cfg.id}&key=${cfg.key}&domain=${encodeURIComponent(domain)}`,
+      // 响应成功：{"code":200,"icp":"蜀ICP备...号","unit":"..."}
+      // 响应无记录：{"code":400,"msg":"查询失败或没有备案。"}
+      // 同样仅当 icp 为真实备案号（含「ICP备/证」且以「号」结尾）才判有备案。
+      parse: (data) => {
+        const lic = data && typeof data.icp === 'string' ? data.icp.trim() : '';
+        const isRealIcp = /ICP[备证]/.test(lic);
+        if (data && (data.code === 200 || data.code === '200') && isRealIcp) {
+          const unit = (data.unit && data.unit !== '查询失败') ? data.unit : '';
+          return { hasIcp: true, icpNumber: lic, unitName: unit };
+        }
+        return { hasIcp: false };
+      }
+    }
+  ]
+};

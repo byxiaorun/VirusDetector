@@ -270,6 +270,21 @@ class SettingsApp {
             </div>
           </div>`;
 
+      case 'text':
+        return `
+          <div class="setting-row" data-key="${setting.key}" data-mode="${setting.mode || 'basic'}">
+            <div class="setting-info">
+              <div class="setting-label">${setting.label}</div>
+              <div class="setting-desc">${setting.desc}</div>
+            </div>
+            <div class="setting-control">
+              <input type="text" class="setting-input text-input" autocomplete="off" spellcheck="false"
+                data-key="${setting.key}" data-type="text"
+                value="${this._escapeHtml(value)}" placeholder="${setting.placeholder || ''}"
+                ${this._isInputDisabled(setting) ? 'disabled' : ''}>
+            </div>
+          </div>`;
+
       case 'action':
         const actionClass = setting.key === '_clearAllData' ? ' danger' : '';
         return `
@@ -307,6 +322,8 @@ class SettingsApp {
       } else if (type === 'number') {
         input.value = value;
       } else if (type === 'select') {
+        input.value = value;
+      } else if (type === 'text') {
         input.value = value;
       }
     }
@@ -525,6 +542,9 @@ class SettingsApp {
       case 'select':
         value = input.value;
         break;
+      case 'text':
+        value = input.value;
+        break;
       case 'theme':
         value = input.checked ? 'light' : 'dark';
         break;
@@ -712,7 +732,7 @@ class SettingsApp {
     try {
       const all = await chrome.storage.local.get(null);
       const keysToRemove = Object.keys(all).filter(k =>
-        k.startsWith('domain_cache_')
+        k.startsWith('domain_cache_') || k.startsWith('icp_api_v1_')
       );
       if (keysToRemove.length > 0) {
         await chrome.storage.local.remove(keysToRemove);
@@ -1331,6 +1351,9 @@ SettingsApp.prototype._loadStorageStats = async function () {
     const cacheKeys = Object.keys(all).filter(k =>
       k.startsWith('domain_cache_')
     );
+    const icpApiCacheKeys = Object.keys(all).filter(k =>
+      k.startsWith('icp_api_v1_')
+    );
     const tabStateKeys = Object.keys(all).filter(k => k.startsWith('tab_state_'));
     const whitelist = all[STORAGE_KEYS.WHITELIST] || [];
     const blacklist = all[STORAGE_KEYS.DOWNLOAD_BLACKLIST] || [];
@@ -1347,6 +1370,7 @@ SettingsApp.prototype._loadStorageStats = async function () {
         </div>
       </div>
       <div class="about-row"><span class="about-label">缓存记录</span><span class="about-value">${cacheKeys.length} 条</span></div>
+      <div class="about-row"><span class="about-label">ICP API 缓存</span><span class="about-value">${icpApiCacheKeys.length} 条</span></div>
       <div class="about-row"><span class="about-label">标签页状态</span><span class="about-value">${tabStateKeys.length} 个</span></div>
       <div class="about-row"><span class="about-label">白名单域名</span><span class="about-value">${Array.isArray(whitelist) ? whitelist.length : 0} 个</span></div>
       <div class="about-row"><span class="about-label">下载黑名单</span><span class="about-value">${typeof blacklist === 'object' ? Object.keys(blacklist).length : 0} 条</span></div>
