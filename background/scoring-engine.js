@@ -328,7 +328,7 @@ export class ScoringEngine {
     const totalScore = preliminaryScore + domainAgeResult.score + ageBonusResult.score;
     const isSuspicious = totalScore >= resolveSetting('scoreThreshold', SCORE_THRESHOLD);
 
-    return {
+    const result = {
       totalScore,
       isSuspicious,
       riskLevel: isSuspicious ? RISK_LEVEL.WARNING : RISK_LEVEL.SAFE,
@@ -346,6 +346,7 @@ export class ScoringEngine {
       timestamp: Date.now()
     };
     _activeSettings = prevSettings;
+    return result;
   }
 
   /**
@@ -451,7 +452,7 @@ export class ScoringEngine {
     const totalScore = newPreliminaryScore + ageBonusResult.score;
     const isSuspicious = totalScore >= resolveSetting('scoreThreshold', SCORE_THRESHOLD);
 
-    return {
+    const result = {
       domainAgeResult,
       ageBonusResult,
       totalScore,
@@ -459,6 +460,7 @@ export class ScoringEngine {
       riskLevel: isSuspicious ? RISK_LEVEL.WARNING : RISK_LEVEL.SAFE
     };
     _activeSettings = prevSettings;
+    return result;
   }
 
   // ==================== 规则一：域名仿冒 (60分) ====================

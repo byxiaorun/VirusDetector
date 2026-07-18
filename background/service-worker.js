@@ -460,14 +460,15 @@ async function triggerWarningFlow(tabId, tabState) {
  *
  * @param {number} tabId - 标签页 ID
  * @param {string[]} archiveUrls - 已知的压缩包下载链接 URL 列表
+ * @param {string} [mode='full'] - 注入模式: 'lightweight' | 'standard' | 'full'
  */
-async function injectDownloadBlocker(tabId, archiveUrls = []) {
+async function injectDownloadBlocker(tabId, archiveUrls = [], mode = 'full') {
   const settings = await loadGlobalSettings();
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: injectBlockerFunc,
-      args: [archiveUrls, settings.detectNonArchiveFiles],
+      args: [archiveUrls, settings.detectNonArchiveFiles, mode],
       injectImmediately: true
     }).catch(e => console.error('[ServiceWorker] 注入拦截脚本失败:', e));
   } catch (e) {
@@ -479,13 +480,18 @@ async function injectDownloadBlocker(tabId, archiveUrls = []) {
  * 注入到页面的拦截函数（独立定义以支持 args 传递）
  * @param {string[]} archiveUrls - 已知压缩包链接
  */
-function injectBlockerFunc(archiveUrls, detectNonArchive) {
+function injectBlockerFunc(archiveUrls, detectNonArchive, mode) {
+  // mode: 注入模式 — 'lightweight' (≥50) | 'standard' (≥80) | 'full' (≥100, 默认)
   // detectNonArchive: 是否检测非压缩包可执行文件（默认 false，由设置页控制）
   detectNonArchive = detectNonArchive || false;
+  mode = mode || 'full';
 
-  // 避免重复注入
-  if (window.__virusDetectorInjected) return;
-  window.__virusDetectorInjected = true;
+  // 避免重复注入：使用排名制守卫，允许从低等级升级到高等级
+  var MODE_RANK = { lightweight: 1, standard: 2, full: 3 };
+  var newRank = MODE_RANK[mode] || 3;
+  var existingRank = window.__virusDetectorInjectedRank || 0;
+  if (existingRank >= newRank) return;
+  window.__virusDetectorInjectedRank = newRank;
 
   // ══════════════════════════════════════════════════════
   // Part 0: JS 级别下载拦截（对抗 IDM 绕过 & 自动下载）
@@ -641,53 +647,58 @@ function injectBlockerFunc(archiveUrls, detectNonArchive) {
 
   // ══════════════════════════════════════════════════════
   // Part 3: 移除 download 属性 + 视觉禁用下载元素（旧版能力）
+  // 'lightweight' 模式下跳过（仅 JS hooks + click 拦截，无视觉禁用）
   // ══════════════════════════════════════════════════════
 
-  // 移除所有链接的 download 属性（防止强制下载 + 右键另存为绕过）
-  document.querySelectorAll('a[download]').forEach(function(a) { a.removeAttribute('download'); });
+  if (mode !== 'lightweight') {
 
-  function disableExistingDownloadButtons() {
-    // 3a. 禁用所有带下载文本的交互元素
-    var allInteractive = document.querySelectorAll('a, button, [role="button"], input[type="submit"], input[type="button"]');
-    for (var j = 0; j < allInteractive.length; j++) {
-      var el = allInteractive[j];
-      if (hasDownloadIntent(el)) {
-        el.style.pointerEvents = 'none';
-        el.style.opacity = '0.5';
-        el.style.cursor = 'not-allowed';
-        el.title = '下载已被安全插件禁用';
-        if (el.tagName === 'A') {
-          el.removeAttribute('href');
-          el.setAttribute('data-original-href', el.href || '');
+    // 移除所有链接的 download 属性（防止强制下载 + 右键另存为绕过）
+    document.querySelectorAll('a[download]').forEach(function(a) { a.removeAttribute('download'); });
+
+    function disableExistingDownloadButtons() {
+      // 3a. 禁用所有带下载文本的交互元素
+      var allInteractive = document.querySelectorAll('a, button, [role="button"], input[type="submit"], input[type="button"]');
+      for (var j = 0; j < allInteractive.length; j++) {
+        var el = allInteractive[j];
+        if (hasDownloadIntent(el)) {
+          el.style.pointerEvents = 'none';
+          el.style.opacity = '0.5';
+          el.style.cursor = 'not-allowed';
+          el.title = '下载已被安全插件禁用';
+          if (el.tagName === 'A') {
+            el.removeAttribute('href');
+            el.setAttribute('data-original-href', el.href || '');
+          }
+          el.setAttribute('disabled', 'disabled');
+          el.classList.add('virus-detector-blocked');
         }
-        el.setAttribute('disabled', 'disabled');
-        el.classList.add('virus-detector-blocked');
+      }
+
+      // 3b. 禁用常见的下载容器
+      var downloadContainers = document.querySelectorAll(
+        '[class*="download"], [id*="download"], ' +
+        '[class*="btn-dl"], [class*="btn_dl"], ' +
+        '[class*="down-btn"], [class*="down_btn"], ' +
+        '.dl-btn, .dl_box, .down_url'
+      );
+      for (var k = 0; k < downloadContainers.length; k++) {
+        var container = downloadContainers[k];
+        var links = container.querySelectorAll('a, button');
+        for (var m = 0; m < links.length; m++) {
+          var link = links[m];
+          link.style.pointerEvents = 'none';
+          link.style.opacity = '0.4';
+          link.title = '下载已被安全插件禁用';
+          if (link.tagName === 'A') link.removeAttribute('href');
+          link.setAttribute('disabled', 'disabled');
+        }
       }
     }
 
-    // 3b. 禁用常见的下载容器
-    var downloadContainers = document.querySelectorAll(
-      '[class*="download"], [id*="download"], ' +
-      '[class*="btn-dl"], [class*="btn_dl"], ' +
-      '[class*="down-btn"], [class*="down_btn"], ' +
-      '.dl-btn, .dl_box, .down_url'
-    );
-    for (var k = 0; k < downloadContainers.length; k++) {
-      var container = downloadContainers[k];
-      var links = container.querySelectorAll('a, button');
-      for (var m = 0; m < links.length; m++) {
-        var link = links[m];
-        link.style.pointerEvents = 'none';
-        link.style.opacity = '0.4';
-        link.title = '下载已被安全插件禁用';
-        if (link.tagName === 'A') link.removeAttribute('href');
-        link.setAttribute('disabled', 'disabled');
-      }
-    }
+    // 初始执行
+    disableExistingDownloadButtons();
+
   }
-
-  // 初始执行
-  disableExistingDownloadButtons();
 
   // ══════════════════════════════════════════════════════
   // Part 4: 全局点击拦截 — 双层（新版精准 + 旧版宽泛）
@@ -755,34 +766,41 @@ function injectBlockerFunc(archiveUrls, detectNonArchive) {
 
   // ══════════════════════════════════════════════════════
   // Part 5: MutationObserver 动态监控（旧版能力）
+  // 'lightweight' 模式下跳过（仅 JS hooks + click 拦截）
   // ══════════════════════════════════════════════════════
 
-  var observer = new MutationObserver(function() {
-    disableExistingDownloadButtons();
-  });
+  if (mode !== 'lightweight') {
 
-  if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true });
-    // 30 秒后停止观察（避免性能影响）
-    setTimeout(function() { observer.disconnect(); }, 30000);
+    var observer = new MutationObserver(function() {
+      disableExistingDownloadButtons();
+    });
+
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+      // 30 秒后停止观察（避免性能影响）
+      setTimeout(function() { observer.disconnect(); }, 30000);
+    }
+
   }
 
   // ══════════════════════════════════════════════════════
-  // Part 6: 顶部红色警告横幅
+  // Part 6: 顶部红色警告横幅（仅 'full' 模式，≥100 分）
   // ══════════════════════════════════════════════════════
 
-  if (!document.getElementById('__virus_detector_overlay')) {
-    var overlay = document.createElement('div');
-    overlay.id = '__virus_detector_overlay';
-    overlay.innerHTML =
-      '<div style="position:fixed;top:0;left:0;right:0;z-index:2147483646;' +
-      'background:linear-gradient(135deg,#b71c1c,#c62828);color:#fff;' +
-      'text-align:center;padding:12px 20px;font-size:14px;font-weight:bold;' +
-      'font-family:-apple-system,BlinkMacSystemFont,\'Microsoft YaHei\',sans-serif;' +
-      'box-shadow:0 2px 12px rgba(183,28,28,0.5);">' +
-      '⚠️ 风险警告：该网站被检测为疑似钓鱼/恶意网站，请勿输入个人信息或下载任何文件！' +
-      '</div>';
-    document.documentElement.appendChild(overlay);
+  if (mode === 'full') {
+    if (!document.getElementById('__virus_detector_overlay')) {
+      var overlay = document.createElement('div');
+      overlay.id = '__virus_detector_overlay';
+      overlay.innerHTML =
+        '<div style="position:fixed;top:0;left:0;right:0;z-index:2147483646;' +
+        'background:linear-gradient(135deg,#b71c1c,#c62828);color:#fff;' +
+        'text-align:center;padding:12px 20px;font-size:14px;font-weight:bold;' +
+        'font-family:-apple-system,BlinkMacSystemFont,\'Microsoft YaHei\',sans-serif;' +
+        'box-shadow:0 2px 12px rgba(183,28,28,0.5);">' +
+        '⚠️ 风险警告：该网站被检测为疑似钓鱼/恶意网站，请勿输入个人信息或下载任何文件！' +
+        '</div>';
+      document.documentElement.appendChild(overlay);
+    }
   }
 }
 
@@ -945,42 +963,10 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
       ruleResults: sanitizeRuleResultsForCache(syncResult.breakdown)
     });
 
-    // ═══ 分层注入拦截器（三层递进） ═══
-    const currentScore = syncResult.totalScore;
-    const dlInjectEnabled = settings.downloadInjection !== false;
+    // ═══ 页面注入仅在 ≥100 时由 triggerWarningFlow 触发 ═══
+    // 80~99 分段不做页面注入，仅由下载事件层（chrome.downloads.onCreated）处理
+    // <80 分段不干预
 
-    // 收集已知压缩包链接 URL 列表（用于精准拦截）
-    const blkArchiveUrls = [];
-    if (linkMetrics && linkMetrics.archiveDownloadLinks) {
-      for (const lnk of linkMetrics.archiveDownloadLinks) {
-        try { blkArchiveUrls.push(new URL(lnk.href, 'http://' + domain).href); }
-        catch (e) { blkArchiveUrls.push(lnk.href); }
-      }
-    }
-    // 也从 ResourceGraph 收集
-    if (resourceGraph && resourceGraph.discoveredArchives) {
-      for (const node of resourceGraph.discoveredArchives) {
-        if (!blkArchiveUrls.includes(node.url)) blkArchiveUrls.push(node.url);
-      }
-    }
-
-    // Tier 1 (≥50): 注入 lightweight 拦截器 — 仅 JS-level hooks + click 拦截
-    // Tier 2 (≥80): 注入完整拦截器 — 含视觉禁用下载按钮 + MutationObserver
-    // Tier 3 (≥100): 完整拦截器 + 警告窗口 + 红色图标（由 triggerWarningFlow 处理）
-
-    if (dlInjectEnabled && currentScore >= getEffectiveThreshold('downloadConfirmThreshold', DOWNLOAD_CONFIRM_THRESHOLD) &&
-        currentScore < getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)) {
-      // ≥80 但 <100: 注入完整页面拦截 + 视觉禁用
-      console.log('[ServiceWorker] 分层注入 Tier 2 (≥80): 完整页面拦截');
-      await injectDownloadBlocker(tabId, blkArchiveUrls);
-    } else if (dlInjectEnabled && currentScore >= 50 &&
-               currentScore < getEffectiveThreshold('downloadConfirmThreshold', DOWNLOAD_CONFIRM_THRESHOLD)) {
-      // ≥50 但 <80: 注入 lightweight 拦截器（仅 JS hooks + click 拦截）
-      console.log('[ServiceWorker] 分层注入 Tier 1 (≥50): lightweight 拦截');
-      await injectDownloadBlocker(tabId, blkArchiveUrls); // 复用同一函数,但传递更少的 archiveUrls
-    }
-
-    // 根据同步分数执行即时响应（≥100: 完整高危流程）
     if (syncResult.totalScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)) {
       await triggerWarningFlow(tabId, tabState);
     } else {
@@ -1302,12 +1288,30 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 
     await saveTabState(tabId, tabState);
 
-    // 分数达标 → 取消下载
-    if (newScore >= getEffectiveThreshold('downloadConfirmThreshold', DOWNLOAD_CONFIRM_THRESHOLD)) {
-      // 取消下载（≥80 分即拦截）
+    // 分数达标 → 取消下载（两层分流）
+    if (newScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)) {
+      // ≥100: 取消下载 + 完整高危流程（警告窗口覆盖下载确认需求，不弹确认窗）
       try {
         await chrome.downloads.cancel(downloadItem.id);
-        console.log('[ServiceWorker] 已取消危险下载:', downloadItem.filename);
+        console.log('[ServiceWorker] 已取消危险下载（≥100）:', downloadItem.filename);
+      } catch (e) {
+        console.error('[ServiceWorker] 取消下载失败:', e);
+      }
+
+      await CacheManager.set(tabState.domain, {
+        score: newScore,
+        isMalicious: true,
+        correctUrl: tabState.correctUrl,
+        ruleResults: sanitizeRuleResultsForCache(tabState.ruleResults)
+      });
+
+      await triggerWarningFlow(tabId, tabState);
+
+    } else if (newScore >= getEffectiveThreshold('downloadConfirmThreshold', DOWNLOAD_CONFIRM_THRESHOLD)) {
+      // 80~99: 取消下载 + 三选项确认弹窗（唯一拦截手段，不做页面注入）
+      try {
+        await chrome.downloads.cancel(downloadItem.id);
+        console.log('[ServiceWorker] 已取消危险下载（80~99）:', downloadItem.filename);
       } catch (e) {
         console.error('[ServiceWorker] 取消下载失败:', e);
       }
@@ -1328,21 +1332,17 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
         timestamp: Date.now()
       });
 
-      // 弹出二次确认弹窗（80~99 分仅弹窗，无页面注入拦截）
+      // 弹出二次确认弹窗
       openDownloadConfirmation(tabState, downloadItem, fileName, downloadDomain, tabId);
 
-      // 更新缓存（≥scoreThreshold 标记为恶意，低于阈值仅更新分数不触发注入）
+      // 更新缓存
       await CacheManager.set(tabState.domain, {
         score: newScore,
-        isMalicious: newScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD),
+        isMalicious: false,
         correctUrl: tabState.correctUrl,
         ruleResults: sanitizeRuleResultsForCache(tabState.ruleResults)
       });
 
-      // ≥scoreThreshold：额外触发完整高危响应（警告窗口 + 图标变红 + 注入拦截脚本）
-      if (newScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)) {
-        await triggerWarningFlow(tabId, tabState);
-      }
     } else {
       setIconGreen(tabId, newScore);
     }
