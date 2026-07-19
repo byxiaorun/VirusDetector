@@ -26,7 +26,7 @@ import { CacheManager } from './cache-manager.js';
 import { DownloadBlacklist } from './download-blacklist.js';
 import { SiteBlacklist } from './site-blacklist.js';
 import { ResourceResolver } from './resource-resolver/index.js';
-import { registerNonChineseBrandDomains } from './icp-utils.js';
+import { registerNonChineseBrandDomains, IcpUtils } from './icp-utils.js';
 import { IcpApiClient } from './icp-api.js';
 import { UrlUtils } from '../utils/url-utils.js';
 import {
@@ -1145,29 +1145,10 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
     }
   }
 
-  // ─── ICP 备案 API 核验：按域名查询备案（页面文本扫描降级为兜底）───
-  // 见 icp-api.js。失败/超时不阻塞分析，规则三会回退到原页面文本扫描。
-  // 读取设置以决定 API 总开关 / 各 provider 开关 / 自定义 apihz 凭据（配置页可控）。
+  // ─── ICP 备案 API 核验已改为异步（见 _launchAsyncIcpCheck）───
+  // 同步阶段仅依赖页面文本扫描给出规则三评分，避免 API 网络延迟（最长 16s）
+  // 拖慢整站检测。API 核验结果通过异步回调增量修正评分。
   const settings = await getSettings();
-  let icpApi = null;
-  try {
-    // 按设置开关覆盖 ICP_API_CONFIG 中各 provider 的 enabled，构造有效数据源列表
-    const effProviders = ICP_API_CONFIG.providers.map(p => {
-      const clone = { ...p };
-      if (p.name === 'uapis') clone.enabled = settings.icpApiProviderUapis !== false;
-      if (p.name === 'apihz') clone.enabled = settings.icpApiProviderApihz !== false;
-      return clone;
-    });
-    const icpOpts = {
-      enabled: settings.icpApiEnabled !== false,   // 总开关（默认开）
-      providers: effProviders,
-      apihzId: settings.icpApiApiahzId || undefined,   // 用户自有 apihz 凭据（绕过 10 次/分钟公共限流）
-      apihzKey: settings.icpApiApiahzKey || undefined
-    };
-    icpApi = await IcpApiClient.query(domain, icpOpts);
-  } catch (e) {
-    console.warn('[ServiceWorker] ICP API 查询失败，回退页面扫描:', e && e.message);
-  }
 
   const ctx = {
     url: tabState.url || url,
@@ -1175,7 +1156,7 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
     icpStrings: tabState.icpStrings || [],
     textSignals: tabState.textSignals || null,
     hasIcpGovLink: tabState.hasIcpGovLink || false,
-    icpApi, // 新增：备案 API 核验结果（null → 回退页面文本扫描）
+    icpApi: null, // ICP API 改为异步核验，同步阶段传 null 走页面文本扫描
     linkMetrics: linkMetrics || tabState.linkMetrics || null,
     downloadState: tabState.downloadState || { hasDownloadedArchive: false },
     pageMetrics: pageMetrics || tabState.pageMetrics || null,
@@ -1251,6 +1232,35 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
       }).catch(e => {
         console.error('[ServiceWorker] Whois异步补充失败:', domain, e);
       });
+    }
+
+    // ═══ 异步 ICP 备案 API 核验（不阻塞主流程） ═══
+    // 同步阶段已通过页面文本扫描给出规则三评分；
+    // 此处异步调用 API 核验，可能纠正两类情况：
+    //   ① 合法备案但页面未展示 → 原 +50 → 修正为 0（消除误报）
+    //   ② 页面展示备案号但 API 确认域名无备案 → 原 0 → 修正为 +50（盗用/伪造）
+    if (!syncResult.isConfirmedOfficial && !IcpUtils.isIcpExempt(domain)) {
+      const rule3Result = syncResult.breakdown.rule3;
+      const icpSnapshot = {
+        domain, tabId,
+        pageUrl: tabState.url || url,
+        icpStrings: tabState.icpStrings || [],
+        hasIcpGovLink: tabState.hasIcpGovLink || false,
+        impersonating: syncResult.breakdown.rule1.triggered || false,
+        oldRule3: {
+          score: rule3Result.score || 0,
+          triggered: rule3Result.triggered || false,
+          icpFound: rule3Result.icpFound || false,
+          icpNumbers: rule3Result.icpNumbers || [],
+          icpVerified: rule3Result.icpVerified || false,
+          icpBlacklisted: rule3Result.icpBlacklisted || false
+        },
+        syncScore: syncResult.totalScore,
+        syncBreakdown: syncResult.breakdown,
+        correctUrl: syncResult.correctUrl,
+        officialName: syncResult.officialName
+      };
+      _launchAsyncIcpCheck(icpSnapshot);
     }
 
   } catch (error) {
@@ -1338,6 +1348,176 @@ async function _applyWhoisUpdate(ctx, whoisResult) {
     domain, oldScore, newScore,
     creationDays: whoisResult.domainAgeResult.creationDays
   });
+}
+
+// ==================== ICP 异步核验 ====================
+
+/**
+ * 异步发起 ICP 备案 API 查询（不阻塞主流程）。
+ *
+ * 设计意图：
+ *   同步阶段（evaluateSync）仅依赖页面文本扫描给出规则三评分，
+ *   避免 API 网络延迟拖慢整站检测。本函数在同步评分完成后异步调用
+ *   IcpApiClient.query()，结果返回后通过 _applyIcpUpdate 增量修正评分。
+ *
+ * 可以纠正的两类情况：
+ *   ① 合法备案但页面未展示备案号 → 原 +50 → 修正为 0（消除误报）
+ *   ② 页面展示备案号但 API 确认域名无备案 → 原 0 → 修正为 +50（盗用/伪造）
+ *
+ * @param {Object} snapshot - 同步阶段的上下文快照
+ */
+async function _launchAsyncIcpCheck(snapshot) {
+  try {
+    const settings = await getSettings();
+
+    // 按设置开关覆盖各 provider 的 enabled
+    const effProviders = ICP_API_CONFIG.providers.map(p => {
+      const clone = { ...p };
+      if (p.name === 'uapis') clone.enabled = settings.icpApiProviderUapis !== false;
+      if (p.name === 'apihz') clone.enabled = settings.icpApiProviderApihz !== false;
+      return clone;
+    });
+    const icpOpts = {
+      enabled: settings.icpApiEnabled !== false,
+      providers: effProviders,
+      apihzId: settings.icpApiApiahzId || undefined,
+      apihzKey: settings.icpApiApiahzKey || undefined
+    };
+
+    const icpApi = await IcpApiClient.query(snapshot.domain, icpOpts);
+
+    // API 未返回有效结果（全部源失败/限流/禁用）→ 保持原评分
+    if (!icpApi || !icpApi.queried) {
+      console.log('[ServiceWorker] ICP API 异步查询未返回有效结果，保持原评分:', snapshot.domain);
+      return;
+    }
+
+    await _applyIcpUpdate(snapshot, icpApi);
+  } catch (e) {
+    console.warn('[ServiceWorker] ICP 异步核验失败:', snapshot.domain, e && e.message);
+  }
+}
+
+/**
+ * 应用 ICP API 异步查询结果，增量更新标签页状态。
+ * 仅在分数变化或跨过阈值时更新图标/触发警告流程。
+ *
+ * @param {Object} snapshot - 同步阶段的上下文快照
+ * @param {Object} icpApi - IcpApiClient.query() 的返回结果
+ */
+async function _applyIcpUpdate(snapshot, icpApi) {
+  const { domain, tabId } = snapshot;
+
+  // 竞态条件检查：用户是否已导航到其他页面
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const currentDomain = UrlUtils.extractHostname(tab.url || '');
+    if (currentDomain !== domain) {
+      console.log('[ServiceWorker] ICP结果过期（用户已导航）:', domain, '→', currentDomain);
+      return;
+    }
+  } catch (e) {
+    console.log('[ServiceWorker] ICP结果过期（标签页已关闭）:', tabId);
+    return;
+  }
+
+  // 白名单检查
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (await isWhitelisted(tab.url || '')) return;
+  } catch (e) { return; }
+
+  // 加载最新 tabState
+  const tabState = await loadTabState(tabId);
+  if (tabState.domain !== domain) {
+    console.log('[ServiceWorker] ICP结果过期（tabState域名不匹配）:', domain);
+    return;
+  }
+
+  // 重新执行规则三（仅注入 API 结果，其余参数与同步阶段一致）
+  // 注意：同步阶段 _evaluateRule3 的 pageText 和 textSignals 均为 undefined，
+  // 此处保持一致以确保判定结果仅受 icpApi 参数影响。
+  const settings = await getSettings();
+  setActiveSettings(settings);
+  const newRule3 = ScoringEngine._evaluateRule3(
+    domain,
+    undefined,                       // pageText（同步阶段亦未传递）
+    snapshot.icpStrings,
+    snapshot.hasIcpGovLink,
+    undefined,                       // textSignals（同步阶段亦未传递）
+    icpApi,
+    snapshot.impersonating
+  );
+  setActiveSettings(null);
+
+  const oldRule3Score = snapshot.oldRule3.score;
+  const newRule3Score = newRule3.score || 0;
+
+  // 分数未变化 → 仅更新 breakdown 中的 API 状态信息（供排查展示）
+  if (oldRule3Score === newRule3Score && snapshot.oldRule3.triggered === newRule3.triggered) {
+    const mergedBreakdown = { ...(tabState.ruleResults || snapshot.syncBreakdown) };
+    mergedBreakdown.rule3 = newRule3;
+    tabState.ruleResults = mergedBreakdown;
+    await saveTabState(tabId, tabState);
+    console.log('[ServiceWorker] ICP异步核验完成（分数未变）:', {
+      domain,
+      icpApiResult: icpApi.hasIcp ? '有备案' : '无备案',
+      rule3Score: newRule3Score
+    });
+    return;
+  }
+
+  // 分数变化 — 重新计算总分并更新所有状态
+  const mergedBreakdown = { ...(tabState.ruleResults || snapshot.syncBreakdown) };
+  mergedBreakdown.rule3 = newRule3;
+
+  const newTotalScore = Object.values(mergedBreakdown)
+    .reduce((sum, r) => sum + (r && r.score || 0), 0);
+  const oldTotalScore = tabState.score || snapshot.syncScore;
+
+  tabState.score = newTotalScore;
+  tabState.ruleResults = mergedBreakdown;
+  tabState.riskLevel = newTotalScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD)
+    ? RISK_LEVEL.WARNING : RISK_LEVEL.SAFE;
+  await saveTabState(tabId, tabState);
+
+  // 更新缓存
+  await CacheManager.set(domain, {
+    score: newTotalScore,
+    isMalicious: newTotalScore >= getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD),
+    correctUrl: snapshot.correctUrl,
+    ruleResults: sanitizeRuleResultsForCache(mergedBreakdown)
+  });
+
+  console.log('[ServiceWorker] ICP异步核验完成（分数已更新）:', {
+    domain,
+    icpApiResult: icpApi.hasIcp ? '有备案' : '无备案',
+    rule3: `${oldRule3Score} → ${newRule3Score}`,
+    total: `${oldTotalScore} → ${newTotalScore}`
+  });
+
+  const threshold = getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD);
+  const wasWarning = oldTotalScore >= threshold;
+  const isWarning = newTotalScore >= threshold;
+
+  if (isWarning && !wasWarning) {
+    // 分数从安全跨到危险 → 补触发警告流程
+    console.log('[ServiceWorker] ICP异步核验 → 分数跨过阈值，补触发警告:', {
+      domain, oldTotalScore, newTotalScore
+    });
+    await triggerWarningFlow(tabId, tabState);
+  } else if (!isWarning && wasWarning) {
+    // 分数从危险降回安全 → 清除警告状态
+    console.log('[ServiceWorker] ICP异步核验 → 分数降至阈值以下，清除警告:', {
+      domain, oldTotalScore, newTotalScore
+    });
+    setIconGreen(tabId, newTotalScore);
+    await removeDownloadBlocker(tabId);
+  } else if (isWarning) {
+    setIconRed(tabId);
+  } else {
+    setIconGreen(tabId, newTotalScore);
+  }
 }
 
 /**
