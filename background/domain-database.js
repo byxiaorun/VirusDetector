@@ -1,3 +1,5 @@
+import { UrlUtils } from '../utils/url-utils.js';
+
 /**
  * Virus Detector — 域名数据库 & 仿冒检测 (Domain Database)
  *
@@ -85,7 +87,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '腾讯电脑管家',
-    officialDomains: ['guanjia.qq.com', 'gj.qq.com'],
+    officialDomains: ['guanjia.qq.com'],
     correctUrl: 'https://guanjia.qq.com',
     category: SOFTWARE_CATEGORIES.SECURITY,
     keywords: ['电脑管家', '腾讯管家', '腾讯电脑管家', 'QQ电脑管家'],
@@ -118,7 +120,7 @@ const DOMAIN_DATABASE = [
 // ========== 浏览器 ==========
   {
     name: '360浏览器',
-    officialDomains: ['browser.360.cn', 'se.360.cn', 'chromex.360.cn'],
+    officialDomains: ['browser.360.cn'],
     correctUrl: 'https://browser.360.cn',
     category: SOFTWARE_CATEGORIES.BROWSER,
     keywords: ['360浏览器', '360极速浏览器', '360安全浏览器'],
@@ -126,7 +128,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'QQ浏览器',
-    officialDomains: ['browser.qq.com', 'liulanqi.qq.com'],
+    officialDomains: ['browser.qq.com'],
     correctUrl: 'https://browser.qq.com',
     category: SOFTWARE_CATEGORIES.BROWSER,
     keywords: ['QQ浏览器', 'qq浏览器', '腾讯浏览器'],
@@ -207,7 +209,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'QQ',
-    officialDomains: ['im.qq.com', 'qq.com'],
+    officialDomains: ['im.qq.com'],
     correctUrl: 'https://im.qq.com',
     category: SOFTWARE_CATEGORIES.IM_SOCIAL,
     keywords: ['QQ', '腾讯QQ', 'qq'],
@@ -256,7 +258,7 @@ const DOMAIN_DATABASE = [
 // ========== 输入法 ==========
   {
     name: '搜狗输入法',
-    officialDomains: ['pinyin.sogou.com', 'shurufa.sogou.com'],
+    officialDomains: ['shurufa.sogou.com'],
     correctUrl: 'https://pinyin.sogou.com',
     category: SOFTWARE_CATEGORIES.INPUT_METHOD,
     keywords: ['搜狗输入法', '搜狗拼音', 'sogou输入法', '搜狗拼音输入法', '搜狗', 'sogou'],
@@ -264,7 +266,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '百度输入法',
-    officialDomains: ['shurufa.baidu.com', 'ime.baidu.com'],
+    officialDomains: ['shurufa.baidu.com'],
     correctUrl: 'https://shurufa.baidu.com',
     category: SOFTWARE_CATEGORIES.INPUT_METHOD,
     keywords: ['百度输入法', '百度拼音', '百度拼音输入法', '百度手机输入法'],
@@ -361,8 +363,8 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '网易有道',
-    officialDomains: ['youdao.com', 'dict.youdao.com', 'fanyi.youdao.com', 'top.youdao.com'],
-    correctUrl: 'https://www.youdao.com',
+    officialDomains: ['dict.youdao.com'],
+    correctUrl: 'https://dict.youdao.com',
     category: SOFTWARE_CATEGORIES.OFFICE,
     keywords: ['有道', 'youdao', '网易有道', '有道词典', '有道翻译'],
     isChineseBrand: true
@@ -434,7 +436,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '搜狐视频',
-    officialDomains: ['tv.sohu.com', 'sohu.com'],
+    officialDomains: ['tv.sohu.com'],
     correctUrl: 'https://tv.sohu.com',
     category: SOFTWARE_CATEGORIES.VIDEO,
     keywords: ['搜狐视频', 'sohu视频', '搜狐', 'sohu'],
@@ -483,7 +485,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '咪咕音乐',
-    officialDomains: ['music.migu.cn', 'migu.cn'],
+    officialDomains: ['music.migu.cn'],
     correctUrl: 'https://music.migu.cn',
     category: SOFTWARE_CATEGORIES.MUSIC,
     keywords: ['咪咕音乐', '咪咕', 'migu', '中国移动音乐', 'migumusic'],
@@ -565,7 +567,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '通义千问',
-    officialDomains: ['tongyi.aliyun.com', 'qianwen.aliyun.com', 'qianwen.com', 'dashscope.console.aliyun.com', 'chat.qwen.ai'],
+    officialDomains: ['tongyi.aliyun.com', 'qianwen.com', 'chat.qwen.ai'],
     correctUrl: 'https://tongyi.aliyun.com',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['通义千问', 'tongyi', 'qianwen', '阿里', '千问', '百炼'],
@@ -581,7 +583,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '讯飞星火',
-    officialDomains: ['xinghuo.xfyun.cn', 'agent.xfyun.cn'],
+    officialDomains: ['xinghuo.xfyun.cn'],
     correctUrl: 'https://xinghuo.xfyun.cn',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['讯飞星火', 'xinghuo', 'xfyun', '科大讯飞', '星火', '星辰Agent'],
@@ -589,7 +591,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '360智脑',
-    officialDomains: ['chat.360.com', 'ai.360.com', 'ai.360.cn'],
+    officialDomains: ['ai.360.com', 'ai.360.cn'],
     correctUrl: 'https://ai.360.cn',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['360智脑', '智脑', '360', 'ai.360'],
@@ -597,7 +599,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'Kimi',
-    officialDomains: ['moonshot.cn', 'kimi.com', 'platform.kimi.com', 'platform.kimi.ai', 'kimi.ai'],
+    officialDomains: ['moonshot.cn', 'kimi.com', 'kimi.ai'],
     correctUrl: 'https://kimi.moonshot.cn',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['Kimi', 'kimi', 'moonshot', '月之暗面'],
@@ -605,7 +607,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'DeepSeek',
-    officialDomains: ['chat.deepseek.com', 'deepseek.com', 'platform.deepseek.com'],
+    officialDomains: ['chat.deepseek.com'],
     correctUrl: 'https://chat.deepseek.com',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['DeepSeek', 'deepseek', '深度求索'],
@@ -613,7 +615,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '智谱清言',
-    officialDomains: ['chatglm.cn', 'bigmodel.cn', 'open.bigmodel.cn', 'chat.z.ai'],
+    officialDomains: ['chatglm.cn', 'bigmodel.cn', 'chat.z.ai'],
     correctUrl: 'https://chatglm.cn',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['智谱清言', 'chatglm', '智谱', 'GLM', '清言', 'bigmodel'],
@@ -621,7 +623,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'ChatGPT',
-    officialDomains: ['openai.com', 'chatgpt.com', 'platform.openai.com'],
+    officialDomains: ['openai.com', 'chatgpt.com'],
     correctUrl: 'https://chatgpt.com',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['ChatGPT', 'chatgpt', 'OpenAI', 'openai'],
@@ -638,7 +640,7 @@ const DOMAIN_DATABASE = [
 // ========== 下载工具 ==========
   {
     name: '迅雷',
-    officialDomains: ['xunlei.com', 'dl.xunlei.com', 'mobile.xunlei.com'],
+    officialDomains: ['xunlei.com'],
     correctUrl: 'https://www.xunlei.com',
     category: SOFTWARE_CATEGORIES.DOWNLOAD_TOOL,
     keywords: ['迅雷', 'xunlei', 'Thunder', '迅雷下载'],
@@ -646,7 +648,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'IDM下载器',
-    officialDomains: ['internetdownloadmanager.com', 'secure.internetdownloadmanager.com'],
+    officialDomains: ['internetdownloadmanager.com'],
     correctUrl: 'https://www.internetdownloadmanager.com',
     category: SOFTWARE_CATEGORIES.DOWNLOAD_TOOL,
     keywords: ['IDM', 'Internet Download Manager', 'IDM下载工具'],
@@ -654,7 +656,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '比特彗星',
-    officialDomains: ['bitcomet.com', 'wiki-zh.bitcomet.com'],
+    officialDomains: ['bitcomet.com'],
     correctUrl: 'https://www.bitcomet.com',
     category: SOFTWARE_CATEGORIES.DOWNLOAD_TOOL,
     keywords: ['比特彗星', 'BitComet', 'bitcomet', 'BitComet下载', 'BT下载客户端'],
@@ -769,7 +771,7 @@ const DOMAIN_DATABASE = [
   },
   {
     name: '高德地图',
-    officialDomains: ['amap.com', 'gaode.com', 'www.autonavi.com', 'ditu.amap.com', 'mobile.amap.com'],
+    officialDomains: ['amap.com', 'gaode.com', 'www.autonavi.com'],
     correctUrl: 'https://www.amap.com',
     category: SOFTWARE_CATEGORIES.MAP_TRAVEL,
     keywords: ['高德地图', '高德', 'amap', 'gaode', 'autonavi', '高德软件'],
@@ -794,7 +796,7 @@ const DOMAIN_DATABASE = [
 // ========== 支付 ==========
   {
     name: '支付宝',
-    officialDomains: ['alipay.com', 'alipayplus.com', 'open.alipay.com', 'p.alipay.com'],
+    officialDomains: ['alipay.com', 'alipayplus.com'],
     correctUrl: 'https://www.alipay.com',
     category: SOFTWARE_CATEGORIES.PAYMENT,
     keywords: ['支付宝', 'alipay', 'zhifubao'],
@@ -1274,6 +1276,15 @@ function longestCommonSuffix(a, b) {
 /** 关键词 → 品牌记录列表 映射（同一关键词可能属于多个品牌） */
 const keywordToEntries = new Map();
 
+/**
+ * 命名空间归属索引（按命名空间分组、buildIndex 一次性建好）。
+ * key = 注册域父级（如 sogou.com，由 officialDomains 经 UrlUtils.getMainDomain 推导），
+ * value = 拥有该命名空间的品牌条目。整域 *.sogou.com 都归该品牌所有，
+ * 避免 wubi.sogou.com / shouji.sogou.com 等真·子域被误报。
+ * 零新增数据、零文件膨胀：父域从既有 officialDomains 现算，无需逐条手写主域名。
+ */
+const ownedNamespaces = new Map();
+
 /** 所有去重关键词，按长度从长到短排序（优先匹配长品牌词） */
 let sortedKeywords = [];
 
@@ -1291,6 +1302,9 @@ function splitIntoSegments(label) {
   return label.split(/[-_]/);
 }
 
+// 注：父域推导改用语境已有的 UrlUtils.getMainDomain（PSL 感知，正确处理
+// com.cn / co.uk 等二级后缀）
+
 function buildIndex() {
   for (const entry of DOMAIN_DATABASE) {
     entryByName.set(entry.name, entry);
@@ -1299,6 +1313,9 @@ function buildIndex() {
       const normalized = domain.replace(/^www\./i, '').toLowerCase();
       domainToEntry.set(normalized, entry);
       allOfficialDomains.add(normalized);
+      // 按命名空间分组（一次性建索引）：整域 *.ns 都归该品牌所有（解决真·子域误报）
+      const ns = UrlUtils.getMainDomain(normalized);
+      if (!ownedNamespaces.has(ns)) ownedNamespaces.set(ns, entry);
     }
   }
 
@@ -1344,6 +1361,11 @@ export class DomainDatabase {
       if (normalized.endsWith('.' + domain)) {
         return entry;
       }
+    }
+    // 命名空间归属：整域 *.ns 归该品牌（直接查一次性建好的索引，O(1)，无顺序扫描）
+    const ns = UrlUtils.getMainDomain(normalized);
+    if (ownedNamespaces.has(ns)) {
+      return ownedNamespaces.get(ns);
     }
     return null;
   }
